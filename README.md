@@ -2,7 +2,7 @@
 
 1. Перейти в папку
 
-cd discord_alice
+cd ~/discord_alice
 
 2. Выполнить скрипт
 

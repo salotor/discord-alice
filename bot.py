@@ -84,7 +84,7 @@ async def get_ai_response(history, user_name, user_message):
     }
     
     payload = {
-        "model": "google/gemini-flash-1.5", # Модель, как указано. Если будет ошибка, попробуйте "google/gemini-flash-1.5"
+        "model": "google/gemini-2.5-flash", # Модель
         "messages": messages_payload
     }
     
