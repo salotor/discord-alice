@@ -26,7 +26,8 @@ AVAILABLE_MODELS = {
     "glm": "z-ai/glm-4.5-air:free",
     "deepseek": "deepseek/deepseek-chat-v3-0324:free",
     "qwen": "qwen/qwen3-235b-a22b:free",
-    "dolphin": "cognitivecomputations/dolphin-mistral-24b-venice-edition:free"
+    "dolphin": "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
+    "gptoss": "openai/gpt-oss-20b:free"
 }
 # Текущая активная модель (по умолчанию)
 current_model = AVAILABLE_MODELS["chimera"]
@@ -228,4 +229,5 @@ if __name__ == "__main__":
         print("Ошибка: Не все переменные окружения (DISCORD_TOKEN, OPENROUTER_API_KEY, OWNER_ID) заданы в .env файле.")
     else:
         client.run(DISCORD_TOKEN)
+
 
