@@ -15,7 +15,7 @@ OWNER_ID = int(os.getenv('OWNER_ID'))
 
 # --- Константы и глобальные переменные ---
 CONTEXT_FILE = 'context.json'
-CONTEXT_LIMIT = 1000 # Максимальное количество символов в контексте
+CONTEXT_MESSAGE_LIMIT = 10 # Максимальное количество сообщений в контексте
 COOLDOWN_SECONDS = 30 # Время перезарядки для пользователей
 
 # Системная инструкция для ИИ. Это JSON-строка, которая будет парситься.
@@ -57,11 +57,9 @@ def write_context(channel_id, messages):
         json.dump(data, f, ensure_ascii=False, indent=4)
 
 def trim_context(messages):
-    """Обрезает историю сообщений, чтобы она не превышала лимит символов."""
-    total_chars = sum(len(msg.get('content', '')) for msg in messages)
-    while total_chars > CONTEXT_LIMIT and messages:
-        removed_message = messages.pop(0) # Удаляем самое старое сообщение
-        total_chars -= len(removed_message.get('content', ''))
+    """Обрезает историю сообщений, чтобы она не превышала лимит сообщений."""
+    if len(messages) > CONTEXT_MESSAGE_LIMIT:
+        return messages[-CONTEXT_MESSAGE_LIMIT:]
     return messages
 
 # --- Функция для взаимодействия с API OpenRouter ---
@@ -183,3 +181,4 @@ if __name__ == "__main__":
         print("Ошибка: Не все переменные окружения (DISCORD_TOKEN, OPENROUTER_API_KEY, OWNER_ID) заданы в .env файле.")
     else:
         client.run(DISCORD_TOKEN)
+
