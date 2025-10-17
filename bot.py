@@ -83,7 +83,7 @@ async def get_ai_response(history, user_name, user_message):
     }
     
     payload = {
-        "model": "google/gemini-2.5-flash", # Модель
+        "model": "tngtech/deepseek-r1t2-chimera:free", # Модель
         "messages": messages_payload
     }
     
