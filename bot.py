@@ -152,7 +152,8 @@ async def on_message(message):
     current_time = time.time()
     user_id = message.author.id
     if user_id in user_cooldowns and current_time - user_cooldowns[user_id] < COOLDOWN_SECONDS:
-        # Можно отправить тихое уведомление, но лучше просто игнорировать
+        # Отправляем тихое уведомление о перезарядке
+        await message.reply("Слишком часто пишешь. Подожди немного.", silent=True)
         print(f"Кулдаун для пользователя {message.author.display_name}")
         return
         
