@@ -16,7 +16,8 @@ OWNER_ID = int(os.getenv('OWNER_ID'))
 # --- Константы и глобальные переменные ---
 CONTEXT_FILE = 'context.json'
 CONTEXT_MESSAGE_LIMIT = 10 # Максимальное количество сообщений в контексте
-COOLDOWN_SECONDS = 30 # Время перезарядки для пользователей
+MESSAGE_LIMIT_PER_HOUR = 30 # Лимит сообщений в час
+MESSAGE_LIMIT_WINDOW_SECONDS = 3600 # 1 час в секундах
 
 # Системная инструкция для ИИ. Это JSON-строка, которая будет парситься.
 SYSTEM_PROMPT_JSON = """
@@ -25,7 +26,7 @@ SYSTEM_PROMPT_JSON = """
 SYSTEM_MESSAGE_OBJECT = json.loads(SYSTEM_PROMPT_JSON)
 
 bot_active = False # Статус бота (включен/выключен)
-user_cooldowns = {} # Словарь для отслеживания перезарядки {user_id: timestamp}
+user_message_timestamps = {} # Словарь для отслеживания временных меток сообщений {user_id: [timestamp1, ...]}
 
 # --- Настройка клиента Discord ---
 intents = discord.Intents.default()
@@ -146,16 +147,32 @@ async def on_message(message):
     if not bot_active or not (is_reply or is_mentioned):
         return
 
-    # --- Проверка на спам (кулдаун) ---
+    # --- Проверка на лимит сообщений ---
     current_time = time.time()
     user_id = message.author.id
-    if user_id in user_cooldowns and current_time - user_cooldowns[user_id] < COOLDOWN_SECONDS:
-        # Отправляем тихое уведомление о перезарядке
-        await message.reply("Слишком часто пишешь. Подожди немного.", silent=True)
-        print(f"Кулдаун для пользователя {message.author.display_name}")
+
+    # Получаем временные метки сообщений пользователя
+    user_timestamps = user_message_timestamps.get(user_id, [])
+
+    # Убираем старые временные метки (старше часа)
+    valid_timestamps = [t for t in user_timestamps if current_time - t < MESSAGE_LIMIT_WINDOW_SECONDS]
+
+    # Проверяем, не превышен ли лимит
+    if len(valid_timestamps) >= MESSAGE_LIMIT_PER_HOUR:
+        # Рассчитываем время ожидания
+        oldest_timestamp = valid_timestamps[0]
+        time_to_wait_seconds = (oldest_timestamp + MESSAGE_LIMIT_WINDOW_SECONDS) - current_time
+        time_to_wait_minutes = (time_to_wait_seconds // 60) + 1 # Округляем до следующей целой минуты
+
+        await message.reply(f"Вы превысили лимит сообщений. Вы сможете продолжить через {int(time_to_wait_minutes)} минут.", silent=True)
+        print(f"Лимит сообщений для пользователя {message.author.display_name} превышен.")
         return
         
     async with message.channel.typing():
+        # Добавляем текущую временную метку и обновляем данные
+        valid_timestamps.append(current_time)
+        user_message_timestamps[user_id] = valid_timestamps
+        
         # Читаем и обрезаем контекст
         channel_id = message.channel.id
         context_history = read_context(channel_id)
@@ -167,9 +184,6 @@ async def on_message(message):
         
         # Записываем обновленный контекст
         write_context(channel_id, updated_history)
-        
-        # Обновляем время последнего сообщения для пользователя
-        user_cooldowns[user_id] = time.time()
         
         # Отправляем ответ
         if response_text:
