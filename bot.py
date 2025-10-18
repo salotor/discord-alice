@@ -15,6 +15,7 @@ OWNER_ID = int(os.getenv('OWNER_ID'))
 
 # --- Константы и глобальные переменные ---
 CONTEXT_FILE = 'context.json'
+SETTINGS_FILE = 'settings.json'
 DEFAULT_CONTEXT_MESSAGE_LIMIT = 10 # Максимальное количество сообщений в контексте по умолчанию
 MESSAGE_LIMIT_PER_HOUR = 30 # Лимит сообщений в час
 MESSAGE_LIMIT_WINDOW_SECONDS = 3600 # 1 час в секундах
@@ -31,10 +32,6 @@ AVAILABLE_MODELS = {
 }
 # Модель по умолчанию
 default_model = AVAILABLE_MODELS["gemini"]
-# Словарь для хранения моделей по каналам {channel_id: model_name}
-channel_models = {}
-# Словарь для хранения лимитов контекста по каналам {channel_id: limit}
-channel_context_limits = {}
 
 # Системная инструкция для ИИ. Это JSON-строка, которая будет парситься.
 SYSTEM_PROMPT_JSON = """
@@ -45,12 +42,7 @@ SYSTEM_MESSAGE_OBJECT = json.loads(SYSTEM_PROMPT_JSON)
 bot_active = False # Статус бота (включен/выключен)
 user_message_timestamps = {} # Словарь для отслеживания временных меток сообщений {user_id: [timestamp1, ...]}
 
-# --- Настройка клиента Discord ---
-intents = discord.Intents.default()
-intents.message_content = True
-client = discord.Client(intents=intents)
-
-# --- Функции для работы с контекстом ---
+# --- Функции для работы с файлами ---
 
 def read_context(channel_id):
     """Читает историю сообщений для конкретного канала из файла."""
@@ -68,14 +60,41 @@ def write_context(channel_id, messages):
             data = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         data = {}
-    
     data[str(channel_id)] = messages
-    
     with open(CONTEXT_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
+def read_settings():
+    """Читает настройки каналов из файла."""
+    try:
+        with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            # JSON ключи - строки, конвертируем их обратно в int
+            models = {int(k): v for k, v in data.get('channel_models', {}).items()}
+            limits = {int(k): v for k, v in data.get('channel_context_limits', {}).items()}
+            return models, limits
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}, {}
+
+def write_settings(models, limits):
+    """Записывает настройки каналов в файл."""
+    data = {
+        'channel_models': models,
+        'channel_context_limits': limits
+    }
+    with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+
+# --- Загрузка настроек при старте ---
+channel_models, channel_context_limits = read_settings()
+
+# --- Настройка клиента Discord ---
+intents = discord.Intents.default()
+intents.message_content = True
+client = discord.Client(intents=intents)
+
 def trim_context(messages, limit):
-    """Обрезает историю сообщений, чтобы она не превышала лимит сообщений."""
+    """Обрезает историю сообщений, чтобы она не превышала лимит."""
     if len(messages) > limit:
         return messages[-limit:]
     return messages
@@ -85,24 +104,15 @@ def trim_context(messages, limit):
 async def get_ai_response(history, user_name, user_message, model_to_use):
     """Отправляет запрос к API OpenRouter и возвращает ответ."""
     api_url = "https://openrouter.ai/api/v1/chat/completions"
-    
-    # Добавляем новое сообщение пользователя в историю
     history.append({"role": "user", "name": user_name, "content": user_message})
-    
-    # Формируем полный набор сообщений для отправки
     messages_payload = [SYSTEM_MESSAGE_OBJECT] + history
-    
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "http://localhost:3000", # Можно указать любой, это требование OpenRouter
-        "X-Title": "Alisa Discord Bot" # Название вашего проекта
+        "HTTP-Referer": "http://localhost:3000",
+        "X-Title": "Alisa Discord Bot"
     }
-    
-    payload = {
-        "model": model_to_use, # Используем переданную модель
-        "messages": messages_payload
-    }
+    payload = { "model": model_to_use, "messages": messages_payload }
     
     try:
         async with aiohttp.ClientSession() as session:
@@ -110,13 +120,11 @@ async def get_ai_response(history, user_name, user_message, model_to_use):
                 if response.status == 200:
                     result = await response.json()
                     ai_response = result['choices'][0]['message']['content']
-                    # Добавляем ответ ИИ в историю для последующей записи
                     history.append({"role": "assistant", "content": ai_response})
                     return ai_response, history
                 else:
                     error_text = await response.text()
                     print(f"Ошибка API: {response.status} - {error_text}")
-                    # Удаляем сообщение пользователя, если API не ответило
                     history.pop()
                     return "Чёт я зависла, не могу ответить. Попробуй позже.", history
     except Exception as e:
@@ -131,13 +139,14 @@ async def on_ready():
     """Событие, которое срабатывает при успешном подключении бота."""
     print(f'Бот {client.user} успешно запущен!')
     print(f'Модель по умолчанию: {default_model}')
+    print(f'Загружено {len(channel_models)} настроек моделей для каналов.')
+    print(f'Загружено {len(channel_context_limits)} настроек контекста для каналов.')
 
 @client.event
 async def on_message(message):
     """Событие, которое срабатывает на каждое новое сообщение."""
     global bot_active, channel_models, channel_context_limits
     
-    # Игнорируем сообщения от самого себя
     if message.author == client.user:
         return
 
@@ -165,11 +174,11 @@ async def on_message(message):
                 if model_alias in AVAILABLE_MODELS:
                     channel_id = message.channel.id
                     channel_models[channel_id] = AVAILABLE_MODELS[model_alias]
-                    # Сбрасываем контекст при смене модели
                     write_context(channel_id, [])
+                    write_settings(channel_models, channel_context_limits) # Сохраняем настройки
                     await message.channel.send(f"Модель для этого канала изменена на: `{channel_models[channel_id]}`. Контекст сброшен.")
                 else:
-                    await message.channel.send(f"Неизвестный псевдоним модели: `{model_alias}`. Используйте `!list_models_dv` для просмотра доступных моделей.")
+                    await message.channel.send(f"Неизвестный псевдоним модели: `{model_alias}`. Используйте `!list_models_dv`.")
             else:
                 await message.channel.send("Использование: `!set_model_dv <псевдоним_модели>`")
             return
@@ -182,6 +191,7 @@ async def on_message(message):
                     if limit > 0:
                         channel_id = message.channel.id
                         channel_context_limits[channel_id] = limit
+                        write_settings(channel_models, channel_context_limits) # Сохраняем настройки
                         await message.channel.send(f"Размер контекста для этого канала установлен на {limit} сообщений.")
                     else:
                         await message.channel.send("Размер контекста должен быть положительным числом.")
@@ -205,7 +215,7 @@ async def on_message(message):
                 "`!deactivate_dv` - Деактивировать бота.\n"
                 "`!clear_dv` - Очистить историю сообщений (контекст) в текущем канале.\n"
                 "`!list_models_dv` - Показать список доступных моделей и их псевдонимов.\n"
-                "`!set_model_dv <псевдоним>` - Установить активную модель для текущего канала.\n"
+                "`!set_model_dv <псевдоним>` - Установить активную модель для текущего канала (сбрасывает контекст).\n"
                 "`!set_context_dv <число>` - Установить размер контекста (в сообщениях) для текущего канала.\n"
                 "`!help_dv` - Показать это сообщение."
             )
@@ -222,55 +232,40 @@ async def on_message(message):
     # --- Проверка на лимит сообщений ---
     current_time = time.time()
     user_id = message.author.id
-
-    # Получаем временные метки сообщений пользователя
     user_timestamps = user_message_timestamps.get(user_id, [])
-
-    # Убираем старые временные метки (старше часа)
     valid_timestamps = [t for t in user_timestamps if current_time - t < MESSAGE_LIMIT_WINDOW_SECONDS]
 
-    # Проверяем, не превышен ли лимит
     if len(valid_timestamps) >= MESSAGE_LIMIT_PER_HOUR:
-        # Рассчитываем время ожидания
         oldest_timestamp = valid_timestamps[0]
         time_to_wait_seconds = (oldest_timestamp + MESSAGE_LIMIT_WINDOW_SECONDS) - current_time
-        time_to_wait_minutes = (time_to_wait_seconds // 60) + 1 # Округляем до следующей целой минуты
-
+        time_to_wait_minutes = (time_to_wait_seconds // 60) + 1
         await message.reply(f"Вы превысили лимит сообщений. Вы сможете продолжить через {int(time_to_wait_minutes)} минут.", silent=True)
         print(f"Лимит сообщений для пользователя {message.author.display_name} превышен.")
         return
         
     async with message.channel.typing():
-        # Добавляем текущую временную метку и обновляем данные
         valid_timestamps.append(current_time)
         user_message_timestamps[user_id] = valid_timestamps
         
-        # Читаем и обрезаем контекст
         channel_id = message.channel.id
         context_limit = channel_context_limits.get(channel_id, DEFAULT_CONTEXT_MESSAGE_LIMIT)
         context_history = read_context(channel_id)
         context_history = trim_context(context_history, context_limit)
 
-        # Определяем, какую модель использовать для этого канала
         model_for_channel = channel_models.get(channel_id, default_model)
         
-        # Получаем ответ от ИИ
         user_nickname = message.author.display_name
         response_text, updated_history = await get_ai_response(context_history, user_nickname, message.content, model_for_channel)
         
-        # Записываем обновленный контекст, который НЕ содержит информацию о модели
         write_context(channel_id, updated_history)
         
-        # Отправляем ответ
         if response_text:
-            # Находим короткое имя (псевдоним) текущей модели
             model_alias = "unknown"
             for alias, model_name in AVAILABLE_MODELS.items():
                 if model_name == model_for_channel:
                     model_alias = alias
                     break
             
-            # Добавляем информацию о модели в конец сообщения
             final_response = f"{response_text}\n\n*Модель: {model_alias}*"
             await message.reply(final_response, mention_author=False)
 
