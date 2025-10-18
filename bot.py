@@ -22,15 +22,15 @@ MESSAGE_LIMIT_WINDOW_SECONDS = 3600 # 1 час в секундах
 # Словарь доступных моделей с псевдонимами
 AVAILABLE_MODELS = {
     "gemini": "google/gemini-2.5-flash",
-    "chimera": "tngtech/deepseek-r1t2-chimera:free",
-    "glm": "z-ai/glm-4.5-air:free",
-    "deepseek": "deepseek/deepseek-chat-v3-0324:free",
-    "qwen": "qwen/qwen3-235b-a22b:free",
-    "dolphin": "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
-    "gptoss": "openai/gpt-oss-20b:free"
+    "grok": "x-ai/grok-4-fast",
+    "gemini2": "google/gemini-2.0-flash-001",
+    "geminilite": "google/gemini-2.5-flash-lite",
+    "deepseek": "deepseek/deepseek-chat-v3-0324",
+    "gpt4o": "openai/gpt-4o-mini",
+    "gpt5": "openai/gpt-5-mini"
 }
 # Текущая активная модель (по умолчанию)
-current_model = AVAILABLE_MODELS["chimera"]
+current_model = AVAILABLE_MODELS["gemini"]
 
 # Системная инструкция для ИИ. Это JSON-строка, которая будет парситься.
 SYSTEM_PROMPT_JSON = """
@@ -229,5 +229,6 @@ if __name__ == "__main__":
         print("Ошибка: Не все переменные окружения (DISCORD_TOKEN, OPENROUTER_API_KEY, OWNER_ID) заданы в .env файле.")
     else:
         client.run(DISCORD_TOKEN)
+
 
 
