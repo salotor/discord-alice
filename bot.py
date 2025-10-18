@@ -229,12 +229,21 @@ async def on_message(message):
         user_nickname = message.author.display_name
         response_text, updated_history = await get_ai_response(context_history, user_nickname, message.content)
         
-        # Записываем обновленный контекст
+        # Записываем обновленный контекст, который НЕ содержит информацию о модели
         write_context(channel_id, updated_history)
         
         # Отправляем ответ
         if response_text:
-            await message.reply(response_text, mention_author=False)
+            # Находим короткое имя (псевдоним) текущей модели
+            model_alias = "unknown"
+            for alias, model_name in AVAILABLE_MODELS.items():
+                if model_name == current_model:
+                    model_alias = alias
+                    break
+            
+            # Добавляем информацию о модели в конец сообщения
+            final_response = f"{response_text}\n\n*Модель: {model_alias}*"
+            await message.reply(final_response, mention_author=False)
 
 # --- Запуск бота ---
 if __name__ == "__main__":
