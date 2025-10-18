@@ -3,6 +3,7 @@ import os
 import json
 import aiohttp
 import time
+from datetime import datetime
 from dotenv import load_dotenv
 
 # --- Загрузка конфигурации ---
@@ -16,6 +17,7 @@ OWNER_ID = int(os.getenv('OWNER_ID'))
 # --- Константы и глобальные переменные ---
 CONTEXT_FILE = 'context.json'
 SETTINGS_FILE = 'settings.json'
+LOGS_FILE = 'api_logs.jsonl' # Файл для логов
 DEFAULT_CONTEXT_MESSAGE_LIMIT = 10 # Максимальное количество сообщений в контексте по умолчанию
 MESSAGE_LIMIT_PER_HOUR = 30 # Лимит сообщений в час
 MESSAGE_LIMIT_WINDOW_SECONDS = 3600 # 1 час в секундах
@@ -69,10 +71,9 @@ def read_settings():
     try:
         with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            # JSON ключи - строки, конвертируем их обратно в int
             models = {int(k): v for k, v in data.get('channel_models', {}).items()}
             limits = {int(k): v for k, v in data.get('channel_context_limits', {}).items()}
-            show_model = data.get('show_model_name', True) # По умолчанию включено
+            show_model = data.get('show_model_name', True)
             return models, limits, show_model
     except (FileNotFoundError, json.JSONDecodeError):
         return {}, {}, True
@@ -86,6 +87,14 @@ def write_settings(models, limits, show_model):
     }
     with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
+
+def log_api_call(log_data):
+    """Записывает данные об API вызове в файл логов."""
+    try:
+        with open(LOGS_FILE, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(log_data, ensure_ascii=False) + '\n')
+    except Exception as e:
+        print(f"Ошибка при записи в лог-файл: {e}")
 
 # --- Загрузка настроек при старте ---
 channel_models, channel_context_limits, show_model_name = read_settings()
@@ -103,7 +112,7 @@ def trim_context(messages, limit):
 
 # --- Функция для взаимодействия с API OpenRouter ---
 
-async def get_ai_response(history, user_name, user_message, model_to_use):
+async def get_ai_response(history, user_id, user_name, channel_id, user_message, model_to_use):
     """Отправляет запрос к API OpenRouter и возвращает ответ."""
     api_url = "https://openrouter.ai/api/v1/chat/completions"
     history.append({"role": "user", "name": user_name, "content": user_message})
@@ -114,25 +123,46 @@ async def get_ai_response(history, user_name, user_message, model_to_use):
         "HTTP-Referer": "http://localhost:3000",
         "X-Title": "Alisa Discord Bot"
     }
-    payload = { "model": model_to_use, "messages": messages_payload }
+    payload = {"model": model_to_use, "messages": messages_payload}
+    
+    request_time = time.time()
+    log_data = {}
     
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(api_url, headers=headers, json=payload) as response:
+                response_time = time.time()
+                response_body = await response.text()
+                
+                log_data = {
+                    "timestamp_utc": datetime.utcnow().isoformat(),
+                    "user_id": user_id,
+                    "user_name": user_name,
+                    "channel_id": channel_id,
+                    "model_used": model_to_use,
+                    "request_payload": payload,
+                    "response_status": response.status,
+                    "response_body": json.loads(response_body) if response.headers.get('Content-Type') == 'application/json' else response_body,
+                    "duration_seconds": response_time - request_time
+                }
+
                 if response.status == 200:
-                    result = await response.json()
+                    result = json.loads(response_body)
                     ai_response = result['choices'][0]['message']['content']
                     history.append({"role": "assistant", "content": ai_response})
                     return ai_response, history
                 else:
-                    error_text = await response.text()
-                    print(f"Ошибка API: {response.status} - {error_text}")
+                    print(f"Ошибка API: {response.status} - {response_body}")
                     history.pop()
                     return "Чёт я зависла, не могу ответить. Попробуй позже.", history
     except Exception as e:
         print(f"Произошла ошибка при запросе к API: {e}")
+        log_data["error"] = str(e)
         history.pop()
         return "Не получилось связаться с... кхм, с центром. Попробуй позже.", history
+    finally:
+        if log_data:
+            log_api_call(log_data)
 
 # --- События Discord ---
 
@@ -144,7 +174,6 @@ async def on_ready():
     print(f'Загружено {len(channel_models)} настроек моделей для каналов.')
     print(f'Загружено {len(channel_context_limits)} настроек контекста для каналов.')
     print(f'Отображение модели: {"Включено" if show_model_name else "Выключено"}')
-
 
 @client.event
 async def on_message(message):
@@ -267,7 +296,14 @@ async def on_message(message):
         model_for_channel = channel_models.get(channel_id, default_model)
         
         user_nickname = message.author.display_name
-        response_text, updated_history = await get_ai_response(context_history, user_nickname, message.content, model_for_channel)
+        response_text, updated_history = await get_ai_response(
+            context_history, 
+            message.author.id, 
+            user_nickname, 
+            channel_id, 
+            message.content, 
+            model_for_channel
+        )
         
         write_context(channel_id, updated_history)
         
