@@ -174,6 +174,19 @@ async def on_message(message):
             await message.channel.send(response)
             return
 
+        if message.content == '!help_dv':
+            help_text = (
+                "**Команды управления ботом (только для владельца):**\n\n"
+                "`!activate_dv` - Активировать бота.\n"
+                "`!deactivate_dv` - Деактивировать бота.\n"
+                "`!clear_dv` - Очистить историю сообщений (контекст) в текущем канале.\n"
+                "`!list_models_dv` - Показать список доступных моделей и их псевдонимов.\n"
+                "`!set_model_dv <псевдоним>` - Установить активную модель.\n"
+                "`!help_dv` - Показать это сообщение."
+            )
+            await message.channel.send(help_text)
+            return
+
     # --- Основная логика ответа ---
     is_reply = message.reference and message.reference.resolved.author == client.user
     is_mentioned = client.user.mentioned_in(message)
