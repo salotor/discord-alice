@@ -15,7 +15,7 @@ OWNER_ID = int(os.getenv('OWNER_ID'))
 
 # --- Константы и глобальные переменные ---
 CONTEXT_FILE = 'context.json'
-CONTEXT_MESSAGE_LIMIT = 10 # Максимальное количество сообщений в контексте
+DEFAULT_CONTEXT_MESSAGE_LIMIT = 10 # Максимальное количество сообщений в контексте по умолчанию
 MESSAGE_LIMIT_PER_HOUR = 30 # Лимит сообщений в час
 MESSAGE_LIMIT_WINDOW_SECONDS = 3600 # 1 час в секундах
 
@@ -29,10 +29,12 @@ AVAILABLE_MODELS = {
     "gpt4o": "openai/gpt-4o-mini",
     "gpt5": "openai/gpt-5-mini"
 }
-# Текущая активная модель (по умолчанию)
+# Модель по умолчанию
 default_model = AVAILABLE_MODELS["gemini"]
 # Словарь для хранения моделей по каналам {channel_id: model_name}
 channel_models = {}
+# Словарь для хранения лимитов контекста по каналам {channel_id: limit}
+channel_context_limits = {}
 
 # Системная инструкция для ИИ. Это JSON-строка, которая будет парситься.
 SYSTEM_PROMPT_JSON = """
@@ -72,10 +74,10 @@ def write_context(channel_id, messages):
     with open(CONTEXT_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
-def trim_context(messages):
+def trim_context(messages, limit):
     """Обрезает историю сообщений, чтобы она не превышала лимит сообщений."""
-    if len(messages) > CONTEXT_MESSAGE_LIMIT:
-        return messages[-CONTEXT_MESSAGE_LIMIT:]
+    if len(messages) > limit:
+        return messages[-limit:]
     return messages
 
 # --- Функция для взаимодействия с API OpenRouter ---
@@ -133,7 +135,7 @@ async def on_ready():
 @client.event
 async def on_message(message):
     """Событие, которое срабатывает на каждое новое сообщение."""
-    global bot_active, channel_models
+    global bot_active, channel_models, channel_context_limits
     
     # Игнорируем сообщения от самого себя
     if message.author == client.user:
@@ -170,6 +172,23 @@ async def on_message(message):
                 await message.channel.send("Использование: `!set_model_dv <псевдоним_модели>`")
             return
 
+        if message.content.startswith('!set_context_dv '):
+            parts = message.content.split(' ', 1)
+            if len(parts) > 1:
+                try:
+                    limit = int(parts[1])
+                    if limit > 0:
+                        channel_id = message.channel.id
+                        channel_context_limits[channel_id] = limit
+                        await message.channel.send(f"Размер контекста для этого канала установлен на {limit} сообщений.")
+                    else:
+                        await message.channel.send("Размер контекста должен быть положительным числом.")
+                except ValueError:
+                    await message.channel.send("Пожалуйста, укажите корректное число.")
+            else:
+                await message.channel.send("Использование: `!set_context_dv <число_сообщений>`")
+            return
+
         if message.content == '!list_models_dv':
             response = "Доступные модели:\n"
             for alias, model_name in AVAILABLE_MODELS.items():
@@ -185,6 +204,7 @@ async def on_message(message):
                 "`!clear_dv` - Очистить историю сообщений (контекст) в текущем канале.\n"
                 "`!list_models_dv` - Показать список доступных моделей и их псевдонимов.\n"
                 "`!set_model_dv <псевдоним>` - Установить активную модель для текущего канала.\n"
+                "`!set_context_dv <число>` - Установить размер контекста (в сообщениях) для текущего канала.\n"
                 "`!help_dv` - Показать это сообщение."
             )
             await message.channel.send(help_text)
@@ -225,8 +245,9 @@ async def on_message(message):
         
         # Читаем и обрезаем контекст
         channel_id = message.channel.id
+        context_limit = channel_context_limits.get(channel_id, DEFAULT_CONTEXT_MESSAGE_LIMIT)
         context_history = read_context(channel_id)
-        context_history = trim_context(context_history)
+        context_history = trim_context(context_history, context_limit)
 
         # Определяем, какую модель использовать для этого канала
         model_for_channel = channel_models.get(channel_id, default_model)
