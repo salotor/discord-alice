@@ -165,7 +165,9 @@ async def on_message(message):
                 if model_alias in AVAILABLE_MODELS:
                     channel_id = message.channel.id
                     channel_models[channel_id] = AVAILABLE_MODELS[model_alias]
-                    await message.channel.send(f"Модель для этого канала изменена на: `{channel_models[channel_id]}`")
+                    # Сбрасываем контекст при смене модели
+                    write_context(channel_id, [])
+                    await message.channel.send(f"Модель для этого канала изменена на: `{channel_models[channel_id]}`. Контекст сброшен.")
                 else:
                     await message.channel.send(f"Неизвестный псевдоним модели: `{model_alias}`. Используйте `!list_models_dv` для просмотра доступных моделей.")
             else:
