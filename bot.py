@@ -24,8 +24,8 @@ MESSAGE_LIMIT_WINDOW_SECONDS = 3600 # 1 час в секундах
 AVAILABLE_MODELS = {
     "gemini": "google/gemini-2.5-flash",
     "grok": "x-ai/grok-4-fast",
-    "gemini2": "google/gemini-2.0-flash-001",
-    "geminilite": "google/gemini-2.5-flash-lite",
+    "gemini_old": "google/gemini-2.0-flash-001",
+    "gemini_lite": "google/gemini-2.5-flash-lite",
     "deepseek": "deepseek/deepseek-chat-v3-0324",
     "gpt4o": "openai/gpt-4o-mini",
     "gpt5": "openai/gpt-5-mini"
