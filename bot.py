@@ -30,7 +30,9 @@ AVAILABLE_MODELS = {
     "gpt5": "openai/gpt-5-mini"
 }
 # Текущая активная модель (по умолчанию)
-current_model = AVAILABLE_MODELS["gemini"]
+default_model = AVAILABLE_MODELS["gemini"]
+# Словарь для хранения моделей по каналам {channel_id: model_name}
+channel_models = {}
 
 # Системная инструкция для ИИ. Это JSON-строка, которая будет парситься.
 SYSTEM_PROMPT_JSON = """
@@ -78,7 +80,7 @@ def trim_context(messages):
 
 # --- Функция для взаимодействия с API OpenRouter ---
 
-async def get_ai_response(history, user_name, user_message):
+async def get_ai_response(history, user_name, user_message, model_to_use):
     """Отправляет запрос к API OpenRouter и возвращает ответ."""
     api_url = "https://openrouter.ai/api/v1/chat/completions"
     
@@ -96,7 +98,7 @@ async def get_ai_response(history, user_name, user_message):
     }
     
     payload = {
-        "model": current_model, # Используем текущую модель
+        "model": model_to_use, # Используем переданную модель
         "messages": messages_payload
     }
     
@@ -126,12 +128,12 @@ async def get_ai_response(history, user_name, user_message):
 async def on_ready():
     """Событие, которое срабатывает при успешном подключении бота."""
     print(f'Бот {client.user} успешно запущен!')
-    print(f'Текущая модель: {current_model}')
+    print(f'Модель по умолчанию: {default_model}')
 
 @client.event
 async def on_message(message):
     """Событие, которое срабатывает на каждое новое сообщение."""
-    global bot_active, current_model
+    global bot_active, channel_models
     
     # Игнорируем сообщения от самого себя
     if message.author == client.user:
@@ -159,8 +161,9 @@ async def on_message(message):
             if len(parts) > 1:
                 model_alias = parts[1]
                 if model_alias in AVAILABLE_MODELS:
-                    current_model = AVAILABLE_MODELS[model_alias]
-                    await message.channel.send(f"Модель изменена на: `{current_model}`")
+                    channel_id = message.channel.id
+                    channel_models[channel_id] = AVAILABLE_MODELS[model_alias]
+                    await message.channel.send(f"Модель для этого канала изменена на: `{channel_models[channel_id]}`")
                 else:
                     await message.channel.send(f"Неизвестный псевдоним модели: `{model_alias}`. Используйте `!list_models_dv` для просмотра доступных моделей.")
             else:
@@ -181,7 +184,7 @@ async def on_message(message):
                 "`!deactivate_dv` - Деактивировать бота.\n"
                 "`!clear_dv` - Очистить историю сообщений (контекст) в текущем канале.\n"
                 "`!list_models_dv` - Показать список доступных моделей и их псевдонимов.\n"
-                "`!set_model_dv <псевдоним>` - Установить активную модель.\n"
+                "`!set_model_dv <псевдоним>` - Установить активную модель для текущего канала.\n"
                 "`!help_dv` - Показать это сообщение."
             )
             await message.channel.send(help_text)
@@ -224,10 +227,13 @@ async def on_message(message):
         channel_id = message.channel.id
         context_history = read_context(channel_id)
         context_history = trim_context(context_history)
+
+        # Определяем, какую модель использовать для этого канала
+        model_for_channel = channel_models.get(channel_id, default_model)
         
         # Получаем ответ от ИИ
         user_nickname = message.author.display_name
-        response_text, updated_history = await get_ai_response(context_history, user_nickname, message.content)
+        response_text, updated_history = await get_ai_response(context_history, user_nickname, message.content, model_for_channel)
         
         # Записываем обновленный контекст, который НЕ содержит информацию о модели
         write_context(channel_id, updated_history)
@@ -237,7 +243,7 @@ async def on_message(message):
             # Находим короткое имя (псевдоним) текущей модели
             model_alias = "unknown"
             for alias, model_name in AVAILABLE_MODELS.items():
-                if model_name == current_model:
+                if model_name == model_for_channel:
                     model_alias = alias
                     break
             
