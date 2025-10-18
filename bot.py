@@ -139,22 +139,22 @@ async def on_message(message):
 
     # --- Обработка команд от владельца ---
     if message.author.id == OWNER_ID:
-        if message.content == '!activate_bot':
+        if message.content == '!activate_dv':
             bot_active = True
             await message.channel.send("Алиса здесь. Чего надобно?")
             return
         
-        if message.content == '!deactivate_bot':
+        if message.content == '!deactivate_dv':
             bot_active = False
             await message.channel.send("Ладно, я в тень.")
             return
 
-        if message.content == '!clear_bot':
+        if message.content == '!clear_dv':
             write_context(message.channel.id, [])
             await message.channel.send("*Контекст диалога в этом канале был стерт*")
             return
             
-        if message.content.startswith('!set_model '):
+        if message.content.startswith('!set_model_dv '):
             parts = message.content.split(' ', 1)
             if len(parts) > 1:
                 model_alias = parts[1]
@@ -162,12 +162,12 @@ async def on_message(message):
                     current_model = AVAILABLE_MODELS[model_alias]
                     await message.channel.send(f"Модель изменена на: `{current_model}`")
                 else:
-                    await message.channel.send(f"Неизвестный псевдоним модели: `{model_alias}`. Используйте `!list_models` для просмотра доступных моделей.")
+                    await message.channel.send(f"Неизвестный псевдоним модели: `{model_alias}`. Используйте `!list_models_dv` для просмотра доступных моделей.")
             else:
-                await message.channel.send("Использование: `!set_model <псевдоним_модели>`")
+                await message.channel.send("Использование: `!set_model_dv <псевдоним_модели>`")
             return
 
-        if message.content == '!list_models':
+        if message.content == '!list_models_dv':
             response = "Доступные модели:\n"
             for alias, model_name in AVAILABLE_MODELS.items():
                 response += f"▫️ `{alias}`: `{model_name}`\n"
@@ -229,3 +229,4 @@ if __name__ == "__main__":
         print("Ошибка: Не все переменные окружения (DISCORD_TOKEN, OPENROUTER_API_KEY, OWNER_ID) заданы в .env файле.")
     else:
         client.run(DISCORD_TOKEN)
+
