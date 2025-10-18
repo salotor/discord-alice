@@ -24,11 +24,11 @@ MESSAGE_LIMIT_WINDOW_SECONDS = 3600 # 1 час в секундах
 AVAILABLE_MODELS = {
     "gemini": "google/gemini-2.5-flash",
     "grok": "x-ai/grok-4-fast",
-    "gemini_old": "google/gemini-2.0-flash-001",
-    "gemini_lite": "google/gemini-2.5-flash-lite",
     "deepseek": "deepseek/deepseek-chat-v3-0324",
+    "gpt5": "openai/gpt-5-mini",
     "gpt4o": "openai/gpt-4o-mini",
-    "gpt5": "openai/gpt-5-mini"
+    "gemini_old": "google/gemini-2.0-flash-001",
+    "gemini_lite": "google/gemini-2.5-flash-lite"
 }
 # Модель по умолчанию
 default_model = AVAILABLE_MODELS["gemini"]
@@ -72,21 +72,23 @@ def read_settings():
             # JSON ключи - строки, конвертируем их обратно в int
             models = {int(k): v for k, v in data.get('channel_models', {}).items()}
             limits = {int(k): v for k, v in data.get('channel_context_limits', {}).items()}
-            return models, limits
+            show_model = data.get('show_model_name', True) # По умолчанию включено
+            return models, limits, show_model
     except (FileNotFoundError, json.JSONDecodeError):
-        return {}, {}
+        return {}, {}, True
 
-def write_settings(models, limits):
+def write_settings(models, limits, show_model):
     """Записывает настройки каналов в файл."""
     data = {
         'channel_models': models,
-        'channel_context_limits': limits
+        'channel_context_limits': limits,
+        'show_model_name': show_model
     }
     with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
 # --- Загрузка настроек при старте ---
-channel_models, channel_context_limits = read_settings()
+channel_models, channel_context_limits, show_model_name = read_settings()
 
 # --- Настройка клиента Discord ---
 intents = discord.Intents.default()
@@ -141,11 +143,13 @@ async def on_ready():
     print(f'Модель по умолчанию: {default_model}')
     print(f'Загружено {len(channel_models)} настроек моделей для каналов.')
     print(f'Загружено {len(channel_context_limits)} настроек контекста для каналов.')
+    print(f'Отображение модели: {"Включено" if show_model_name else "Выключено"}')
+
 
 @client.event
 async def on_message(message):
     """Событие, которое срабатывает на каждое новое сообщение."""
-    global bot_active, channel_models, channel_context_limits
+    global bot_active, channel_models, channel_context_limits, show_model_name
     
     if message.author == client.user:
         return
@@ -166,7 +170,14 @@ async def on_message(message):
             write_context(message.channel.id, [])
             await message.channel.send("*Контекст диалога в этом канале был стерт*")
             return
-            
+
+        if message.content == '!toggle_model_name_dv':
+            show_model_name = not show_model_name
+            write_settings(channel_models, channel_context_limits, show_model_name)
+            status = "включено" if show_model_name else "выключено"
+            await message.channel.send(f"Отображение модели в конце сообщений **{status}**.")
+            return
+
         if message.content.startswith('!set_model_dv '):
             parts = message.content.split(' ', 1)
             if len(parts) > 1:
@@ -175,7 +186,7 @@ async def on_message(message):
                     channel_id = message.channel.id
                     channel_models[channel_id] = AVAILABLE_MODELS[model_alias]
                     write_context(channel_id, [])
-                    write_settings(channel_models, channel_context_limits) # Сохраняем настройки
+                    write_settings(channel_models, channel_context_limits, show_model_name)
                     await message.channel.send(f"Модель для этого канала изменена на: `{channel_models[channel_id]}`. Контекст сброшен.")
                 else:
                     await message.channel.send(f"Неизвестный псевдоним модели: `{model_alias}`. Используйте `!list_models_dv`.")
@@ -191,7 +202,7 @@ async def on_message(message):
                     if limit > 0:
                         channel_id = message.channel.id
                         channel_context_limits[channel_id] = limit
-                        write_settings(channel_models, channel_context_limits) # Сохраняем настройки
+                        write_settings(channel_models, channel_context_limits, show_model_name)
                         await message.channel.send(f"Размер контекста для этого канала установлен на {limit} сообщений.")
                     else:
                         await message.channel.send("Размер контекста должен быть положительным числом.")
@@ -217,6 +228,7 @@ async def on_message(message):
                 "`!list_models_dv` - Показать список доступных моделей и их псевдонимов.\n"
                 "`!set_model_dv <псевдоним>` - Установить активную модель для текущего канала (сбрасывает контекст).\n"
                 "`!set_context_dv <число>` - Установить размер контекста (в сообщениях) для текущего канала.\n"
+                "`!toggle_model_name_dv` - Включить/выключить отображение модели в сообщениях.\n"
                 "`!help_dv` - Показать это сообщение."
             )
             await message.channel.send(help_text)
@@ -260,13 +272,15 @@ async def on_message(message):
         write_context(channel_id, updated_history)
         
         if response_text:
-            model_alias = "unknown"
-            for alias, model_name in AVAILABLE_MODELS.items():
-                if model_name == model_for_channel:
-                    model_alias = alias
-                    break
+            final_response = response_text
+            if show_model_name:
+                model_alias = "unknown"
+                for alias, model_name in AVAILABLE_MODELS.items():
+                    if model_name == model_for_channel:
+                        model_alias = alias
+                        break
+                final_response += f"\n\n*Модель: {model_alias}*"
             
-            final_response = f"{response_text}\n\n*Модель: {model_alias}*"
             await message.reply(final_response, mention_author=False)
 
 # --- Запуск бота ---
