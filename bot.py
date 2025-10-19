@@ -30,7 +30,9 @@ AVAILABLE_MODELS = {
     "gpt5": "openai/gpt-5-mini",
     "gpt4o": "openai/gpt-4o-mini",
     "gemini_old": "google/gemini-2.0-flash-001",
-    "gemini_lite": "google/gemini-2.5-flash-lite"
+    "gemini_lite": "google/gemini-2.5-flash-lite",
+    "deepseek_free": "deepseek/deepseek-chat-v3-0324:free",
+    "deepseek_new_free": "deepseek/deepseek-chat-v3.1:free"
 }
 # Модель по умолчанию
 default_model = AVAILABLE_MODELS["gemini"]
