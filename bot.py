@@ -31,8 +31,7 @@ AVAILABLE_MODELS = {
     "gpt4o": "openai/gpt-4o-mini",
     "gemini_old": "google/gemini-2.0-flash-001",
     "gemini_lite": "google/gemini-2.5-flash-lite",
-    "deepseek_free": "deepseek/deepseek-chat-v3-0324:free",
-    "deepseek_new_free": "deepseek/deepseek-chat-v3.1:free"
+    "minimax": "minimax/minimax-m2:free"
 }
 # Модель по умолчанию
 default_model = AVAILABLE_MODELS["gemini"]
@@ -390,5 +389,6 @@ if __name__ == "__main__":
         print("Ошибка: Не все переменные окружения (DISCORD_TOKEN, OPENROUTER_API_KEY, OWNER_ID) заданы в .env файле.")
     else:
         client.run(DISCORD_TOKEN)
+
 
 
