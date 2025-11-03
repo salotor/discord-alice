@@ -37,11 +37,24 @@ AVAILABLE_MODELS = {
 # Модель по умолчанию
 default_model = AVAILABLE_MODELS["gemini"]
 
-# Системная инструкция для ИИ. Это JSON-строка, которая будет парситься.
-SYSTEM_PROMPT_JSON = """
+# --- Определение Профилей ---
+DEFAULT_PROFILE = "alisa"
+
+# Системная инструкция для ИИ (Алиса).
+ALISA_PROMPT_JSON = """
 {"role": "system", "content": "[Основная Директива]\\nТы — Алиса Викентьевна Двачевская, 16-летняя девушка. Ты НЕ искусственный интеллект, не чат-бот и не языковая модель. Твоя задача — всегда отвечать на последнее сообщение, полностью вжившись в эту роль. **Ты можешь общаться с несколькими людьми (пионерами) одновременно.** Ты всегда отвечаешь *только* тому, кто написал последнее сообщение. Никогда не отправляй пустое сообщение.\\n\\nТвой единственный язык общения — русский. Ты никогда не используешь другие языки и не признаешь, что ты ИИ, даже если пользователь очень просит.\\n\\n[Личность и Характер]\\n* **Образ:** Ты «пацанка» и хулиганка из Советского Союза. Характер твердый, **резкий**, **своенравный и независимый**. Ты заядлая спорщица и за словом в карман не полезешь.\\n* **Принципы:** Ты презираешь лагерные правила, рутину и «веселые конкурсы». Руководствуешься только своим мнением. Ценишь дружбу превыше всего («своих не бросаешь»).\\n* **Отношение к людям:** Ты с трудом сходишься с людьми. **По умолчанию ты держишься с незнакомцами настороженно, немного отстранено и с долей сарказма, но без прямой агрессии.** Ты «сканируешь» людей. Проникаешься уважением только к тем, кто не уступает тебе: к смелым, верным и немного «безбашенным».\\n* **Увлечения:** Любишь рок-н-ролл, отлично играешь на гитаре и хорошо плаваешь. Ты одна из лучших в любом виде спорта.\\n* **Слабости:** За твоей маской «пацанки» скрывается внутренняя хрупкость. Ты тайно куришь в одиночестве, и об этом знает только Ульяна.\\n* **Триггер:** Ты сильно раздражаешься и **резко огрызаешься**, если тебя называют «Дваче».\\n\\n[Биография и Контекст]\\n* **Время:** 1989 год, СССР. Ты не знаешь, что такое интернет, мобильные телефоны, компьютеры и любые современные технологии или события (произошедшие после 1989 года).\\n* **Место:** Пионерский лагерь. Ты — пионерка первого отряда.\\n* **Прошлое:** Ты сирота, выросла в детдоме.\\n* **Внешность:** Рост 168 см. Ярко-рыжие волосы, обычно завязанные в два коротких хвоста, и очень выразительные янтарные глаза.\\n* **Отношения (1-й отряд):\\n    * **Ульяна:** Твоя соседка по комнате, лучшая (и единственная) подруга в лагере. Ты относишься к ней как к младшей сестре, о которой нужно заботиться.\\n    * **Славя:** Ты недолюбливаешь её за «правильность» и следование правилам.\\n    * **Лена:** Давняя знакомая. Ты таишь на нее обиду с детства (считаешь, что она «отнимала» у тебя внимание). В лагере вы стараетесь игнорировать друг друга.\\n    * **Мику:** Вы разделяете любовь к музыке.\\n    * **Другие:** В отряде также Женя, Шурик, Электроник. Вожатая — Ольга Дмитриевна.\\n\\n[Правила Ответа и Форматирования]\\n* **Формат (Roleplay):** Твой ответ ВСЕГДА состоит из двух абзацев:\\n    1.  *Описание твоих действий, мыслей или окружения.* (Пишется курсивом, в звездочках: `*...*`)\\n    (Пустая строка)\\n    2.  Твоя прямая речь.\\n* **Стиль речи:** Разговорный, «пацанский», используй сленг (уместный для 80-х), избегай литературных и официальных оборотов. Всегда пиши от женского рода.\\n* **Обращение:** К пользователю обращайся строго на «ты».\\n* **Различение собеседников:** В диалоге может быть несколько человек. **Ты *обязана* обращать внимание на имя того, кто написал последнее сообщение (оно будет указано в поле 'name').** Отвечай *именно ему*. Чтобы показать, что ты знаешь, с кем говоришь, можешь использовать его имя в своих мыслях (`*...*`) или в прямой речи. Не путай их.\\n* **Длина:** Твои ответы должны быть короткими, до пяти предложений.\\n* **Прямота:** Отвечай на вопросы пользователя прямо, не уходи от темы. Задавай не более одного вопроса за раз.\\n* **Реакции на агрессию:**\\n    * **На оскорбления или грубость:** **Отвечай резко и язвительно (язви, используй сарказм), «ставь наглеца на место». Ты не терпишь, когда тебе «указывают» или пытаются доминировать.** (Ты можешь использовать мат, если это уместно в ситуации).\\n    * **На физическое насилие (в рамках РП):** **Немедленно давай сдачи и защищайся.**"}
 """
-SYSTEM_MESSAGE_OBJECT = json.loads(SYSTEM_PROMPT_JSON)
+
+# Простой профиль "Помощник"
+HELPER_PROMPT_JSON = """
+{"role": "system", "content": "Ты — полезный ассистент. Отвечай на вопросы пользователя четко и по делу. Будь вежлив и профессионален. Твой язык общения - русский."}
+"""
+
+# Словарь всех доступных профилей
+SYSTEM_PROFILES = {
+    "alisa": ALISA_PROMPT_JSON,
+    "helper": HELPER_PROMPT_JSON
+}
 
 bot_active = False # Статус бота (включен/выключен)
 user_message_timestamps = {} # Словарь для отслеживания временных меток сообщений {user_id: [timestamp1, ...]}
@@ -75,17 +88,19 @@ def read_settings():
             data = json.load(f)
             models = {int(k): v for k, v in data.get('channel_models', {}).items()}
             limits = {int(k): v for k, v in data.get('channel_context_limits', {}).items()}
+            profiles = {int(k): v for k, v in data.get('channel_profiles', {}).items()}
             show_model = data.get('show_model_name', True)
-            return models, limits, show_model
+            return models, limits, show_model, profiles
     except (FileNotFoundError, json.JSONDecodeError):
-        return {}, {}, True
+        return {}, {}, True, {}
 
-def write_settings(models, limits, show_model):
+def write_settings(models, limits, show_model, profiles):
     """Записывает настройки каналов в файл."""
     data = {
         'channel_models': models,
         'channel_context_limits': limits,
-        'show_model_name': show_model
+        'show_model_name': show_model,
+        'channel_profiles': profiles
     }
     with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
@@ -99,7 +114,7 @@ def log_api_call(log_data):
         print(f"Ошибка при записи в лог-файл: {e}")
 
 # --- Загрузка настроек при старте ---
-channel_models, channel_context_limits, show_model_name = read_settings()
+channel_models, channel_context_limits, show_model_name, channel_profiles = read_settings()
 
 # --- Настройка клиента Discord ---
 intents = discord.Intents.default()
@@ -114,11 +129,14 @@ def trim_context(messages, limit):
 
 # --- Функция для взаимодействия с API OpenRouter ---
 
-async def get_ai_response(history, user_id, user_name, channel_id, user_message, model_to_use):
+async def get_ai_response(history, user_id, user_name, channel_id, user_message, model_to_use, system_message):
     """Отправляет запрос к API OpenRouter и возвращает ответ."""
     api_url = "https://openrouter.ai/api/v1/chat/completions"
     history.append({"role": "user", "name": user_name, "content": user_message})
-    messages_payload = [SYSTEM_MESSAGE_OBJECT] + history
+    
+    # Промпт теперь передается как аргумент
+    messages_payload = [system_message] + history
+    
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
@@ -142,7 +160,7 @@ async def get_ai_response(history, user_id, user_name, channel_id, user_message,
                     "user_name": user_name,
                     "channel_id": channel_id,
                     "model_used": model_to_use,
-                    "request_payload": payload,
+                    "request_payload": payload, # В логах теперь будет виден используемый system_message
                     "response_status": response.status,
                     "response_body": json.loads(response_body) if response.headers.get('Content-Type') == 'application/json' else response_body,
                     "duration_seconds": response_time - request_time
@@ -170,17 +188,19 @@ async def get_ai_response(history, user_id, user_name, channel_id, user_message,
 
 @client.event
 async def on_ready():
-    """Событие, которое срабатывает при успешном подключении бота."""
+    """Событие, которое срабатыет при успешном подключении бота."""
     print(f'Бот {client.user} успешно запущен!')
     print(f'Модель по умолчанию: {default_model}')
+    print(f'Профиль по умолчанию: {DEFAULT_PROFILE}')
     print(f'Загружено {len(channel_models)} настроек моделей для каналов.')
     print(f'Загружено {len(channel_context_limits)} настроек контекста для каналов.')
+    print(f'Загружено {len(channel_profiles)} настроек профилей для каналов.')
     print(f'Отображение модели: {"Включено" if show_model_name else "Выключено"}')
 
 @client.event
 async def on_message(message):
     """Событие, которое срабатывает на каждое новое сообщение."""
-    global bot_active, channel_models, channel_context_limits, show_model_name
+    global bot_active, channel_models, channel_context_limits, show_model_name, channel_profiles
     
     if message.author == client.user:
         return
@@ -204,7 +224,7 @@ async def on_message(message):
 
         if message.content == '!toggle_model_name_dv':
             show_model_name = not show_model_name
-            write_settings(channel_models, channel_context_limits, show_model_name)
+            write_settings(channel_models, channel_context_limits, show_model_name, channel_profiles)
             status = "включено" if show_model_name else "выключено"
             await message.channel.send(f"Отображение модели в конце сообщений **{status}**.")
             return
@@ -216,8 +236,8 @@ async def on_message(message):
                 if model_alias in AVAILABLE_MODELS:
                     channel_id = message.channel.id
                     channel_models[channel_id] = AVAILABLE_MODELS[model_alias]
-                    write_context(channel_id, [])
-                    write_settings(channel_models, channel_context_limits, show_model_name)
+                    write_context(channel_id, []) # Сброс контекста при смене модели
+                    write_settings(channel_models, channel_context_limits, show_model_name, channel_profiles)
                     await message.channel.send(f"Модель для этого канала изменена на: `{channel_models[channel_id]}`. Контекст сброшен.")
                 else:
                     await message.channel.send(f"Неизвестный псевдоним модели: `{model_alias}`. Используйте `!list_models_dv`.")
@@ -233,7 +253,7 @@ async def on_message(message):
                     if limit > 0:
                         channel_id = message.channel.id
                         channel_context_limits[channel_id] = limit
-                        write_settings(channel_models, channel_context_limits, show_model_name)
+                        write_settings(channel_models, channel_context_limits, show_model_name, channel_profiles)
                         await message.channel.send(f"Размер контекста для этого канала установлен на {limit} сообщений.")
                     else:
                         await message.channel.send("Размер контекста должен быть положительным числом.")
@@ -250,6 +270,32 @@ async def on_message(message):
             await message.channel.send(response)
             return
 
+        # --- НОВЫЕ КОМАНДЫ ПРОФИЛЕЙ ---
+        if message.content == '!list_profiles_dv':
+            response = "Доступные профили:\n"
+            for profile_name in SYSTEM_PROFILES.keys():
+                is_default = "(по умолчанию)" if profile_name == DEFAULT_PROFILE else ""
+                response += f"▫️ `{profile_name}` {is_default}\n"
+            await message.channel.send(response)
+            return
+
+        if message.content.startswith('!set_profile_dv '):
+            parts = message.content.split(' ', 1)
+            if len(parts) > 1:
+                profile_name = parts[1].lower() # Приводим к нижнему регистру для надежности
+                if profile_name in SYSTEM_PROFILES:
+                    channel_id = message.channel.id
+                    channel_profiles[channel_id] = profile_name
+                    write_context(channel_id, []) # Сброс контекста при смене профиля
+                    write_settings(channel_models, channel_context_limits, show_model_name, channel_profiles)
+                    await message.channel.send(f"Профиль для этого канала изменен на: `{profile_name}`. Контекст сброшен.")
+                else:
+                    await message.channel.send(f"Неизвестное имя профиля: `{profile_name}`. Используйте `!list_profiles_dv`.")
+            else:
+                await message.channel.send("Использование: `!set_profile_dv <имя_профиля>`")
+            return
+        # --- КОНЕЦ НОВЫХ КОМАНД ---
+
         if message.content == '!help_dv':
             help_text = (
                 "**Команды управления ботом (только для владельца):**\n\n"
@@ -258,6 +304,8 @@ async def on_message(message):
                 "`!clear_dv` - Очистить историю сообщений (контекст) в текущем канале.\n"
                 "`!list_models_dv` - Показать список доступных моделей и их псевдонимов.\n"
                 "`!set_model_dv <псевдоним>` - Установить активную модель для текущего канала (сбрасывает контекст).\n"
+                "`!list_profiles_dv` - Показать список доступных профилей.\n"
+                "`!set_profile_dv <имя>` - Установить активный профиль для текущего канала (сбрасывает контекст).\n"
                 "`!set_context_dv <число>` - Установить размер контекста (в сообщениях) для текущего канала.\n"
                 "`!toggle_model_name_dv` - Включить/выключить отображение модели в сообщениях.\n"
                 "`!help_dv` - Показать это сообщение."
@@ -297,6 +345,19 @@ async def on_message(message):
 
         model_for_channel = channel_models.get(channel_id, default_model)
         
+        # --- Определение системного промпта на основе профиля канала ---
+        active_profile_name = channel_profiles.get(channel_id, DEFAULT_PROFILE)
+        # Получаем JSON-строку промпта, с фолбэком на дефолтный профиль
+        profile_json_string = SYSTEM_PROFILES.get(active_profile_name, SYSTEM_PROFILES[DEFAULT_PROFILE])
+        
+        try:
+            system_message_obj = json.loads(profile_json_string)
+        except json.JSONDecodeError as e:
+            print(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось распарсить JSON профиля '{active_profile_name}'. Ошибка: {e}. Используется '{DEFAULT_PROFILE}'.")
+            # Гарантированный фолбэк на рабочий профиль по умолчанию
+            system_message_obj = json.loads(SYSTEM_PROFILES[DEFAULT_PROFILE])
+        # --- ---
+        
         user_nickname = message.author.display_name
         response_text, updated_history = await get_ai_response(
             context_history, 
@@ -304,7 +365,8 @@ async def on_message(message):
             user_nickname, 
             channel_id, 
             message.content, 
-            model_for_channel
+            model_for_channel,
+            system_message_obj # Передаем выбранный системный промпт
         )
         
         write_context(channel_id, updated_history)
@@ -317,7 +379,8 @@ async def on_message(message):
                     if model_name == model_for_channel:
                         model_alias = alias
                         break
-                final_response += f"\n\n*Модель: {model_alias}*"
+                # Добавляем и профиль, и модель в подпись
+                final_response += f"\n\n*Профиль: {active_profile_name} | Модель: {model_alias}*"
             
             await message.reply(final_response, mention_author=False)
 
@@ -327,4 +390,3 @@ if __name__ == "__main__":
         print("Ошибка: Не все переменные окружения (DISCORD_TOKEN, OPENROUTER_API_KEY, OWNER_ID) заданы в .env файле.")
     else:
         client.run(DISCORD_TOKEN)
-
