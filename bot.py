@@ -203,12 +203,12 @@ async def get_openrouter_ai_response(history, user_id, user_name, channel_id, mo
                 else:
                     print(f"Ошибка API: {response.status} - {response_body}")
                     history.pop()
-                    return "Чёт я зависла, не могу ответить. Попробуй позже.", history
+                    return "Произошла ошибка API, не могу ответить. Попробуйте позже.", history
     except Exception as e:
         print(f"Произошла ошибка при запросе к API: {e}")
         log_data["error"] = str(e)
         history.pop()
-        return "Не получилось связаться с... кхм, с центром. Попробуй позже.", history
+        return "Произошла ошибка сети, не могу ответить. Попробуйте позже.", history
     finally:
         if log_data:
             log_api_call(log_data)
@@ -381,17 +381,17 @@ async def on_message(message):
     if message.author.id == OWNER_ID:
         if message.content == '!activate_bot':
             bot_active = True
-            await message.channel.send("Алиса здесь. Чего надобно?")
+            await message.channel.send("Бот активирован.")
             return
         
         if message.content == '!deactivate_bot':
             bot_active = False
-            await message.channel.send("Ладно, я в тень.")
+            await message.channel.send("Бот деактивирован.")
             return
 
         if message.content == '!clear_bot':
             write_context(message.channel.id, [])
-            await message.channel.send("*Контекст диалога в этом канале был стерт*")
+            await message.channel.send("*Контекст диалога в этом канале очищен.*")
             return
 
         if message.content == '!toggle_info_bot':
@@ -567,6 +567,7 @@ if __name__ == "__main__":
         client.run(DISCORD_TOKEN)
     else:
         client.run(DISCORD_TOKEN)
+
 
 
 
