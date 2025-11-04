@@ -388,11 +388,11 @@ async def on_message(message):
             await message.channel.send("*Контекст диалога в этом канале был стерт*")
             return
 
-        if message.content == '!toggle_model_name_dv':
+        if message.content == '!toggle_info_dv':
             show_model_name = not show_model_name
             write_settings(channel_models, channel_context_limits, show_model_name, channel_profiles)
             status = "включено" if show_model_name else "выключено"
-            await message.channel.send(f"Отображение модели в конце сообщений **{status}**.")
+            await message.channel.send(f"Отображение информации (профиль и модель) в конце сообщений **{status}**.")
             return
 
         if message.content.startswith('!set_model_dv '):
@@ -473,7 +473,7 @@ async def on_message(message):
                 "`!list_profiles_dv` - Показать список доступных профилей.\n"
                 "`!set_profile_dv <имя>` - Установить активный профиль для текущего канала (сбрасывает контекст).\n"
                 "`!set_context_dv <число>` - Установить размер контекста (в сообщениях) для текущего канала.\n"
-                "`!toggle_model_name_dv` - Включить/выключить отображение модели в сообщениях.\n"
+                "`!toggle_info_dv` - Включить/выключить отображение информации (профиль и модель) в сообщениях.\n"
                 "`!help_dv` - Показать это сообщение."
             )
             await message.channel.send(help_text)
@@ -561,3 +561,4 @@ if __name__ == "__main__":
         client.run(DISCORD_TOKEN)
     else:
         client.run(DISCORD_TOKEN)
+
