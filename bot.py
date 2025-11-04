@@ -379,29 +379,29 @@ async def on_message(message):
 
     # --- Обработка команд от владельца ---
     if message.author.id == OWNER_ID:
-        if message.content == '!activate_dv':
+        if message.content == '!activate_bot':
             bot_active = True
             await message.channel.send("Алиса здесь. Чего надобно?")
             return
         
-        if message.content == '!deactivate_dv':
+        if message.content == '!deactivate_bot':
             bot_active = False
             await message.channel.send("Ладно, я в тень.")
             return
 
-        if message.content == '!clear_dv':
+        if message.content == '!clear_bot':
             write_context(message.channel.id, [])
             await message.channel.send("*Контекст диалога в этом канале был стерт*")
             return
 
-        if message.content == '!toggle_info_dv':
+        if message.content == '!toggle_info_bot':
             show_model_name = not show_model_name
             write_settings(channel_models, channel_context_limits, show_model_name, channel_profiles)
             status = "включено" if show_model_name else "выключено"
             await message.channel.send(f"Отображение информации (профиль и модель) в конце сообщений **{status}**.")
             return
 
-        if message.content.startswith('!set_model_dv '):
+        if message.content.startswith('!set_model_bot '):
             parts = message.content.split(' ', 1)
             if len(parts) > 1:
                 model_alias = parts[1]
@@ -412,12 +412,12 @@ async def on_message(message):
                     write_settings(channel_models, channel_context_limits, show_model_name, channel_profiles)
                     await message.channel.send(f"Модель для этого канала изменена на: `{channel_models[channel_id]}`. Контекст сброшен.")
                 else:
-                    await message.channel.send(f"Неизвестный псевдоним модели: `{model_alias}`. Используйте `!list_models_dv`.")
+                    await message.channel.send(f"Неизвестный псевдоним модели: `{model_alias}`. Используйте `!list_models_bot`.")
             else:
-                await message.channel.send("Использование: `!set_model_dv <псевдоним_модели>`")
+                await message.channel.send("Использование: `!set_model_bot <псевдоним_модели>`")
             return
 
-        if message.content.startswith('!set_context_dv '):
+        if message.content.startswith('!set_context_bot '):
             parts = message.content.split(' ', 1)
             if len(parts) > 1:
                 try:
@@ -432,10 +432,10 @@ async def on_message(message):
                 except ValueError:
                     await message.channel.send("Пожалуйста, укажите корректное число.")
             else:
-                await message.channel.send("Использование: `!set_context_dv <число_сообщений>`")
+                await message.channel.send("Использование: `!set_context_bot <число_сообщений>`")
             return
 
-        if message.content == '!list_models_dv':
+        if message.content == '!list_models_bot':
             response = "Доступные модели:\n"
             for alias, model_name in AVAILABLE_MODELS.items():
                 response += f"▫️ `{alias}`: `{model_name}`\n"
@@ -443,7 +443,7 @@ async def on_message(message):
             return
 
         # --- НОВЫЕ КОМАНДЫ ПРОФИЛЕЙ ---
-        if message.content == '!list_profiles_dv':
+        if message.content == '!list_profiles_bot':
             response = "Доступные профили:\n"
             for profile_name in SYSTEM_PROFILES.keys():
                 is_default = "(по умолчанию)" if profile_name == DEFAULT_PROFILE else ""
@@ -451,7 +451,7 @@ async def on_message(message):
             await message.channel.send(response)
             return
 
-        if message.content.startswith('!set_profile_dv '):
+        if message.content.startswith('!set_profile_bot '):
             parts = message.content.split(' ', 1)
             if len(parts) > 1:
                 profile_name = parts[1].lower() # Приводим к нижнему регистру для надежности
@@ -462,25 +462,25 @@ async def on_message(message):
                     write_settings(channel_models, channel_context_limits, show_model_name, channel_profiles)
                     await message.channel.send(f"Профиль для этого канала изменен на: `{profile_name}`. Контекст сброшен.")
                 else:
-                    await message.channel.send(f"Неизвестное имя профиля: `{profile_name}`. Используйте `!list_profiles_dv`.")
+                    await message.channel.send(f"Неизвестное имя профиля: `{profile_name}`. Используйте `!list_profiles_bot`.")
             else:
-                await message.channel.send("Использование: `!set_profile_dv <имя_профиля>`")
+                await message.channel.send("Использование: `!set_profile_bot <имя_профиля>`")
             return
         # --- КОНЕЦ НОВЫХ КОМАНД ---
 
-        if message.content == '!help_dv':
+        if message.content == '!help_bot':
             help_text = (
                 "**Команды управления ботом (только для владельца):**\n\n"
-                "`!activate_dv` - Активировать бота.\n"
-                "`!deactivate_dv` - Деактивировать бота.\n"
-                "`!clear_dv` - Очистить историю сообщений (контекст) в текущем канале.\n"
-                "`!list_models_dv` - Показать список доступных моделей и их псевдонимов.\n"
-                "`!set_model_dv <псевдоним>` - Установить активную модель для текущего канала (сбрасывает контекст).\n"
-                "`!list_profiles_dv` - Показать список доступных профилей.\n"
-                "`!set_profile_dv <имя>` - Установить активный профиль для текущего канала (сбрасывает контекст).\n"
-                "`!set_context_dv <число>` - Установить размер контекста (в сообщениях) для текущего канала.\n"
-                "`!toggle_info_dv` - Включить/выключить отображение информации (профиль и модель) в сообщениях.\n"
-                "`!help_dv` - Показать это сообщение."
+                "`!activate_bot` - Активировать бота.\n"
+                "`!deactivate_bot` - Деактивировать бота.\n"
+                "`!clear_bot` - Очистить историю сообщений (контекст) в текущем канале.\n"
+                "`!list_models_bot` - Показать список доступных моделей и их псевдонимов.\n"
+                "`!set_model_bot <псевдоним>` - Установить активную модель для текущего канала (сбрасывает контекст).\n"
+                "`!list_profiles_bot` - Показать список доступных профилей.\n"
+                "`!set_profile_bot <имя>` - Установить активный профиль для текущего канала (сбрасывает контекст).\n"
+                "`!set_context_bot <число>` - Установить размер контекста (в сообщениях) для текущего канала.\n"
+                "`!toggle_info_bot` - Включить/выключить отображение информации (профиль и модель) в сообщениях.\n"
+                "`!help_bot` - Показать это сообщение."
             )
             await message.channel.send(help_text)
             return
@@ -567,5 +567,6 @@ if __name__ == "__main__":
         client.run(DISCORD_TOKEN)
     else:
         client.run(DISCORD_TOKEN)
+
 
 
