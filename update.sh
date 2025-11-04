@@ -10,7 +10,7 @@ pip install -r requirements.txt
 deactivate
 
 echo ">>> Запуск бота в новом сеансе screen 'discord_alice'..."
-screen -dmS discord_alice bash -c 'source venv/bin/activate && python3 bot.py'
+screen -dmS discord_alice bash -c './venv/bin/python3 bot.py'
 
 echo "✅ Готово! Бот должен быть запущен в фоновом режиме."
 echo "Используйте 'screen -r discord_alice' для просмотра логов."

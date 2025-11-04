@@ -1,28 +1,11 @@
 import discord
 import os
-import sys # <-- ДОБАВЛЕНО
 import json
 import aiohttp
 import time
 import asyncio # Добавлено для асинхронного запуска
 from datetime import datetime
 from dotenv import load_dotenv
-
-# --- НАЧАЛО: Принудительное добавление VENV в путь ---
-# Это "костыль" на случай, если бот запускается
-# не из активированного venv, а системным python.
-# Он заставит python "увидеть" пакеты, установленные в venv.
-try:
-    script_dir = os.path.abspath(os.path.dirname(__file__))
-    # Путь из твоих логов
-    venv_site_packages = os.path.join(script_dir, 'venv', 'lib', 'python3.10', 'site-packages')
-    if venv_site_packages not in sys.path:
-        sys.path.insert(0, venv_site_packages)
-        print(f"Принудительно добавлен путь venv: {venv_site_packages}")
-except Exception as e:
-    print(f"Ошибка при добавлении venv в sys.path: {e}")
-# --- КОНЕЦ: Принудительное добавление VENV в путь ---
-
 
 # --- Новые импорты для Google API ---
 try:
@@ -558,6 +541,7 @@ if __name__ == "__main__":
         client.run(DISCORD_TOKEN)
     else:
         client.run(DISCORD_TOKEN)
+
 
 
 
