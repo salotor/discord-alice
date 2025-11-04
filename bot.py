@@ -7,16 +7,14 @@ import asyncio # Добавлено для асинхронного запуск
 from datetime import datetime
 from dotenv import load_dotenv
 
-# --- Новые импорты для Google API ---
+# --- Новые импорты для Google API (ИСПРАВЛЕНО) ---
 try:
-    from google import genai
-    from google.genai import types
-    from google.generativeai.types import HarmCategory, HarmBlockThreshold
+    import google.generativeai as genai
     GOOGLE_API_AVAILABLE = True
 except ImportError:
     GOOGLE_API_AVAILABLE = False
-    print("ВНИМАНИЕ: 'google-genai' не установлен. Модели Google API не будут работать.")
-    print("Выполните 'pip install google-genai' для установки.")
+    print("ВНИМАНИЕ: Модуль 'google-generativeai' не найден. Модели Google API не будут работать.")
+    print("Выполните 'pip install google-generativeai' для установки.")
 
 
 # --- Загрузка конфигурации ---
@@ -202,7 +200,7 @@ async def get_openrouter_ai_response(history, user_id, user_name, channel_id, mo
         if log_data:
             log_api_call(log_data)
 
-# --- НОВАЯ Функция для взаимодействия с API Google ---
+# --- НОВАЯ Функция для взаимодействия с API Google (ИСПРАВЛЕНО) ---
 
 async def get_google_ai_response(history, user_id, user_name, channel_id, model_to_use, system_message):
     """Отправляет запрос к API Google (genai) и возвращает ответ."""
@@ -217,7 +215,7 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
     try:
         system_instruction = system_message['content']
         
-        # --- Конвертация истории ---
+        # --- Конвертация истории (ИСПРАВЛЕНО) ---
         # Google API требует 'user' и 'model' ролей.
         # Также он не поддерживает поле 'name', поэтому мы добавим его в контент.
         google_history = []
@@ -236,14 +234,15 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
             else:
                 continue # Пропускаем неизвестные роли
 
-            google_history.append(types.Content(role=google_role, parts=[types.Part.from_text(text=content)]))
+            # ИСПОЛЬЗУЕМ genai.prototypes, как вы и предложили
+            google_history.append(genai.prototypes.Content(role=google_role, parts=[genai.prototypes.Part(text=content)]))
         
-        # Настройки безопасности (отключаем блокировку, чтобы не мешать RP)
+        # Настройки безопасности (ИСПРАВЛЕНО - используем genai.*)
         safety_settings = {
-            HarmCategory.HARM_CATEGORY_HARMLESS: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+            genai.HarmCategory.HARM_CATEGORY_HARMLESS: genai.HarmBlockThreshold.BLOCK_NONE,
+            genai.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: genai.HarmBlockThreshold.BLOCK_NONE,
+            genai.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: genai.HarmBlockThreshold.BLOCK_NONE,
+            genai.HarmCategory.HARM_CATEGORY_HARASSMENT: genai.HarmBlockThreshold.BLOCK_NONE,
         }
 
         # --- Синхронный вызов в отдельном потоке ---
@@ -541,4 +540,3 @@ if __name__ == "__main__":
         client.run(DISCORD_TOKEN)
     else:
         client.run(DISCORD_TOKEN)
-
