@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 # --- Новые импорты для Google API (ИСПРАВЛЕНО) ---
 try:
     import google.generativeai as genai
-    from google.genai import types  # <--- ИСПРАВЛЕНИЕ: Добавлен импорт types
+    from google.generativeai import types  # <--- ИСПРАВЛЕНИЕ: Путь должен быть 'google.generativeai.types'
     GOOGLE_API_AVAILABLE = True
 except ImportError:
     GOOGLE_API_AVAILABLE = False
@@ -541,5 +541,6 @@ if __name__ == "__main__":
         client.run(DISCORD_TOKEN)
     else:
         client.run(DISCORD_TOKEN)
+
 
 
