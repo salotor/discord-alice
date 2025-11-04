@@ -3,14 +3,28 @@ import os
 import json
 import aiohttp
 import time
+import asyncio # Добавлено для асинхронного запуска
 from datetime import datetime
 from dotenv import load_dotenv
+
+# --- Новые импорты для Google API ---
+try:
+    from google import genai
+    from google.genai import types
+    from google.generativeai.types import HarmCategory, HarmBlockThreshold
+    GOOGLE_API_AVAILABLE = True
+except ImportError:
+    GOOGLE_API_AVAILABLE = False
+    print("ВНИМАНИЕ: 'google-genai' не установлен. Модели Google API не будут работать.")
+    print("Выполните 'pip install google-genai' для установки.")
+
 
 # --- Загрузка конфигурации ---
 # Загружаем переменные из .env файла
 load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY') # Добавлен ключ Google
 # ID владельца бота для административных команд
 OWNER_ID = int(os.getenv('OWNER_ID'))
 
@@ -31,9 +45,13 @@ AVAILABLE_MODELS = {
     "gpt4o": "openai/gpt-4o-mini",
     "gemini_old": "google/gemini-2.0-flash-001",
     "gemini_lite": "google/gemini-2.5-flash-lite",
-    "minimax": "minimax/minimax-m2:free",
-    "gemini_pro": "google/gemini-2.5-pro"
+    "gemini_pro": "gemini-2.5-pro" # Новая модель
 }
+# Модели, которые будут использовать Google API (по полному имени модели)
+GOOGLE_API_MODELS = {
+    "gemini-2.5-pro"
+}
+
 # Модель по умолчанию
 default_model = AVAILABLE_MODELS["gemini"]
 
@@ -129,10 +147,9 @@ def trim_context(messages, limit):
 
 # --- Функция для взаимодействия с API OpenRouter ---
 
-async def get_ai_response(history, user_id, user_name, channel_id, user_message, model_to_use, system_message):
-    """Отправляет запрос к API OpenRouter и возвращает ответ."""
+async def get_openrouter_ai_response(history, user_id, user_name, channel_id, model_to_use, system_message):
+    """(РЕФАКТОРИНГ) Отправляет запрос к API OpenRouter и возвращает ответ."""
     api_url = "https://openrouter.ai/api/v1/chat/completions"
-    history.append({"role": "user", "name": user_name, "content": user_message})
     
     # Промпт теперь передается как аргумент
     messages_payload = [system_message] + history
@@ -159,6 +176,7 @@ async def get_ai_response(history, user_id, user_name, channel_id, user_message,
                     "user_id": user_id,
                     "user_name": user_name,
                     "channel_id": channel_id,
+                    "provider": "openrouter", # Добавлено для ясности
                     "model_used": model_to_use,
                     "request_payload": payload, # В логах теперь будет виден используемый system_message
                     "response_status": response.status,
@@ -183,6 +201,134 @@ async def get_ai_response(history, user_id, user_name, channel_id, user_message,
     finally:
         if log_data:
             log_api_call(log_data)
+
+# --- НОВАЯ Функция для взаимодействия с API Google ---
+
+async def get_google_ai_response(history, user_id, user_name, channel_id, model_to_use, system_message):
+    """Отправляет запрос к API Google (genai) и возвращает ответ."""
+    
+    request_time = time.time()
+    log_data = {}
+    
+    if not GOOGLE_API_AVAILABLE:
+        history.pop() # Удаляем сообщение пользователя, т.к. мы не можем его обработать
+        return "Модуль 'google-genai' не найден. Не могу обработать запрос.", history
+
+    try:
+        system_instruction = system_message['content']
+        
+        # --- Конвертация истории ---
+        # Google API требует 'user' и 'model' ролей.
+        # Также он не поддерживает поле 'name', поэтому мы добавим его в контент.
+        google_history = []
+        for msg in history:
+            role = msg['role']
+            content = msg['content']
+            
+            if role == "user":
+                google_role = "user"
+                name = msg.get('name')
+                # Добавляем имя пользователя в контент для моделей Google
+                if name:
+                    content = f"[{name}]: {content}"
+            elif role == "assistant":
+                google_role = "model" # У Google роль 'assistant' называется 'model'
+            else:
+                continue # Пропускаем неизвестные роли
+
+            google_history.append(types.Content(role=google_role, parts=[types.Part.from_text(text=content)]))
+        
+        # Настройки безопасности (отключаем блокировку, чтобы не мешать RP)
+        safety_settings = {
+            HarmCategory.HARM_CATEGORY_HARMLESS: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+        }
+
+        # --- Синхронный вызов в отдельном потоке ---
+        def sync_google_call():
+            # Конфигурируем API ключ (важно для 'genai')
+            genai.configure(api_key=GEMINI_API_KEY)
+            
+            model = genai.GenerativeModel(
+                model_name=model_to_use,
+                system_instruction=system_instruction
+            )
+            
+            # Отправляем всю историю (включая последнее сообщение пользователя)
+            response = model.generate_content(
+                google_history,
+                safety_settings=safety_settings
+            )
+            return response.text
+
+        # Запускаем синхронную функцию в потоке, чтобы не блокировать asyncio
+        ai_response = await asyncio.to_thread(sync_google_call)
+        response_time = time.time()
+        # --- Конец вызова ---
+
+        history.append({"role": "assistant", "content": ai_response})
+        
+        log_data = {
+            "timestamp_utc": datetime.utcnow().isoformat(),
+            "user_id": user_id,
+            "user_name": user_name,
+            "channel_id": channel_id,
+            "provider": "google",
+            "model_used": model_to_use,
+            # Не логгируем 'google_history' т.к. это сложный объект,
+            # логгируем только длину и системную инструкцию для отладки
+            "request_payload": {"model": model_to_use, "contents_len": len(google_history), "system_instruction": system_instruction},
+            "response_status": 200, # Успешно, если нет Exception
+            "response_body": ai_response,
+            "duration_seconds": response_time - request_time
+        }
+        
+        return ai_response, history
+
+    except Exception as e:
+        print(f"Произошла ошибка при запросе к API Google: {e}")
+        response_time = time.time()
+        log_data = {
+            "timestamp_utc": datetime.utcnow().isoformat(),
+            "user_id": user_id,
+            "user_name": user_name,
+            "channel_id": channel_id,
+            "provider": "google",
+            "model_used": model_to_use,
+            "response_status": 500, # Внутренняя ошибка
+            "error": str(e),
+            "duration_seconds": response_time - request_time
+        }
+        history.pop() # Удаляем сообщение пользователя, т.к. произошла ошибка
+        return "Чёт с Гуглом не то, не могу ответить. Попробуй позже.", history
+    finally:
+        if log_data:
+            log_api_call(log_data)
+
+
+# --- ДИСПЕТЧЕР API ---
+
+async def get_ai_response(history, user_id, user_name, channel_id, user_message, model_to_use, system_message):
+    """
+    (РЕФАКТОРИНГ) Диспетчер.
+    Добавляет сообщение пользователя в историю и выбирает, какой API вызвать.
+    """
+    # 1. Добавляем новое сообщение пользователя в историю (общий шаг)
+    history.append({"role": "user", "name": user_name, "content": user_message})
+
+    # 2. Выбираем API на основе модели
+    if model_to_use in GOOGLE_API_MODELS:
+        # Используем Google API
+        return await get_google_ai_response(
+            history, user_id, user_name, channel_id, model_to_use, system_message
+        )
+    else:
+        # Используем OpenRouter (по умолчанию)
+        return await get_openrouter_ai_response(
+            history, user_id, user_name, channel_id, model_to_use, system_message
+        )
 
 # --- События Discord ---
 
@@ -386,11 +532,13 @@ async def on_message(message):
 
 # --- Запуск бота ---
 if __name__ == "__main__":
-    if not all([DISCORD_TOKEN, OPENROUTER_API_KEY, OWNER_ID]):
-        print("Ошибка: Не все переменные окружения (DISCORD_TOKEN, OPENROUTER_API_KEY, OWNER_ID) заданы в .env файле.")
+    if not all([DISCORD_TOKEN, OPENROUTER_API_KEY, OWNER_ID, GEMINI_API_KEY]):
+        print("Ошибка: Не все переменные окружения (DISCORD_TOKEN, OPENROUTER_API_KEY, OWNER_ID, GEMINI_API_KEY) заданы в .env файле.")
+        if not GOOGLE_API_AVAILABLE:
+             print("Дополнительно: 'google-genai' не установлен. Выполните 'pip install google-genai'.")
+    elif not GOOGLE_API_AVAILABLE:
+        print("ВНИМАНИЕ: 'google-genai' не установлен. Бот запустится, но модели Google API не будут работать.")
+        client.run(DISCORD_TOKEN)
     else:
         client.run(DISCORD_TOKEN)
-
-
-
 
