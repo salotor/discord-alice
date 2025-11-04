@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 # --- Новые импорты для Google API (ИСПРАВЛЕНО) ---
 try:
     import google.generativeai as genai
-    from google.generativeai import types  # <--- ИСПРАВЛЕНИЕ: Путь должен быть 'google.generativeai.types'
+    from google.generativeai import types  # <--- ОСТАВЛЯЕМ этот импорт для safety_settings
     GOOGLE_API_AVAILABLE = True
 except ImportError:
     GOOGLE_API_AVAILABLE = False
@@ -235,10 +235,10 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
             else:
                 continue # Пропускаем неизвестные роли
 
-            # ИСПОЛЬЗУЕМ types вместо prototypes (ИСПРАВЛЕНИЕ)
-            google_history.append(types.Content(role=google_role, parts=[types.Part(text=content)]))
+            # ИСПРАВЛЕНИЕ: Content и Part берем из genai, а не из types
+            google_history.append(genai.Content(role=google_role, parts=[genai.Part(text=content)]))
         
-        # Настройки безопасности (ИСПРАВЛЕНО - используем genai.*)
+        # Настройки безопасности (ИСПРАВЛЕНО - используем types.*)
         safety_settings = {
             types.HarmCategory.HARM_CATEGORY_HATE_SPEECH: types.HarmBlockThreshold.BLOCK_NONE,
             types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: types.HarmBlockThreshold.BLOCK_NONE,
@@ -541,6 +541,7 @@ if __name__ == "__main__":
         client.run(DISCORD_TOKEN)
     else:
         client.run(DISCORD_TOKEN)
+
 
 
 
