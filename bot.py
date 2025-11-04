@@ -1,5 +1,24 @@
-import discord
 import os
+import sys
+
+# --- [DEBUG] Принудительное добавление venv в sys.path ---
+# Это "костыль" для решения проблемы, когда screen не видит venv
+try:
+    # Получаем АБСОЛЮТНЫЙ путь к директории, где лежит bot.py
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    # Формируем АБСОЛЮТНЫЙ путь к site-packages
+    # ВНИМАНИЕ: Убедись, что 'python3.10' - это твоя верная версия
+    venv_path = os.path.join(script_dir, 'venv', 'lib', 'python3.10', 'site-packages')
+    
+    # Добавляем этот путь в самое начало sys.path
+    if venv_path not in sys.path:
+        sys.path.insert(0, venv_path)
+        print(f"--- [DEBUG] Принудительно добавлен путь: {venv_path}")
+except Exception as e:
+    print(f"--- [DEBUG] Ошибка при добавлении sys.path: {e}")
+# --- [DEBUG] Конец "костыля" ---
+
+import discord
 import json
 import aiohttp
 import time
