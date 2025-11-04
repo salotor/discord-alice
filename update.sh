@@ -1,16 +1,18 @@
+#!/bin/bash
+
 echo ">>> Остановка бота (если запущен в screen 'discord_alice')..."
-screen -S discord_alice -X quit # Принудительно завершает сеанс screen с этим име>
+screen -S discord_alice -X quit
 
 echo ">>> Загрузка обновлений из Git..."
 git pull origin master
 
 echo ">>> Установка/обновление зависимостей..."
-source venv/bin/activate
-pip install -r requirements.txt
-deactivate
+
+./venv/bin/pip install -r requirements.txt
 
 echo ">>> Запуск бота в новом сеансе screen 'discord_alice'..."
-screen -dmS discord_alice bash -c './venv/bin/python3 bot.py'
+
+screen -dmS discord_alice bash -c 'source venv/bin/activate && python3 bot.py'
 
 echo "✅ Готово! Бот должен быть запущен в фоновом режиме."
 echo "Используйте 'screen -r discord_alice' для просмотра логов."
