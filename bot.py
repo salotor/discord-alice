@@ -240,7 +240,7 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
         
         # Настройки безопасности (ИСПРАВЛЕНО - используем genai.*)
         safety_settings = {
-            types.HarmCategory.HARM_CATEGORY_HARMLESS: types.HarmBlockThreshold.BLOCK_NONE,
+            types.HarmCategory.HARM_CATEGORY_HATE_SPEECH: types.HarmBlockThreshold.BLOCK_NONE,
             types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: types.HarmBlockThreshold.BLOCK_NONE,
             types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: types.HarmBlockThreshold.BLOCK_NONE,
             types.HarmCategory.HARM_CATEGORY_HARASSMENT: types.HarmBlockThreshold.BLOCK_NONE,
@@ -541,4 +541,5 @@ if __name__ == "__main__":
         client.run(DISCORD_TOKEN)
     else:
         client.run(DISCORD_TOKEN)
+
 
