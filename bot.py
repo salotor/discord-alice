@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 # --- Новые импорты для Google API (ИСПРАВЛЕНО) ---
 try:
     import google.generativeai as genai
+    from google.genai import types  # <--- ИСПРАВЛЕНИЕ: Добавлен импорт types
     GOOGLE_API_AVAILABLE = True
 except ImportError:
     GOOGLE_API_AVAILABLE = False
@@ -234,8 +235,8 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
             else:
                 continue # Пропускаем неизвестные роли
 
-            # ИСПОЛЬЗУЕМ genai.prototypes, как вы и предложили
-            google_history.append(genai.prototypes.Content(role=google_role, parts=[genai.prototypes.Part(text=content)]))
+            # ИСПОЛЬЗУЕМ types вместо prototypes (ИСПРАВЛЕНИЕ)
+            google_history.append(types.Content(role=google_role, parts=[types.Part(text=content)]))
         
         # Настройки безопасности (ИСПРАВЛЕНО - используем genai.*)
         safety_settings = {
@@ -333,7 +334,7 @@ async def get_ai_response(history, user_id, user_name, channel_id, user_message,
 
 @client.event
 async def on_ready():
-    """Событие, которое срабатыет при успешном подключении бота."""
+    """Событие, которое срабаотыет при успешном подключении бота."""
     print(f'Бот {client.user} успешно запущен!')
     print(f'Модель по умолчанию: {default_model}')
     print(f'Профиль по умолчанию: {DEFAULT_PROFILE}')
