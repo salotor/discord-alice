@@ -210,15 +210,15 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
     log_data = {}
     
     if not GOOGLE_API_AVAILABLE:
-        history.pop() # Удаляем сообщение пользователя, т.к. мы не можем его обработать
+        history.pop()  # Удаляем сообщение пользователя, т.к. мы не можем его обработать
         return "Модуль 'google-genai' не найден. Не могу обработать запрос.", history
 
     try:
         system_instruction = system_message['content']
         
-        # --- Конвертация истории (ИСПРАВЛЕНО) ---
-        # Google API требует 'user' и 'model' ролей.
-        # Также он не поддерживает поле 'name', поэтому мы добавим его в контент.
+        # --- Конвертация истории (ОБНОВЛЕНИЕ) ---
+        # В новых версиях genai история передаётся как список простых dict,
+        # а не прототипов types.Content/Part. Это делает код проще и совместимее.
         google_history = []
         for msg in history:
             role = msg['role']
@@ -231,20 +231,35 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
                 if name:
                     content = f"[{name}]: {content}"
             elif role == "assistant":
-                google_role = "model" # У Google роль 'assistant' называется 'model'
+                google_role = "model"  # У Google роль 'assistant' называется 'model'
             else:
-                continue # Пропускаем неизвестные роли
+                continue  # Пропускаем неизвестные роли
 
-            # ИСПОЛЬЗУЕМ types вместо prototypes (ИСПРАВЛЕНИЕ)
-            google_history.append(types.Content(role=google_role, parts=[types.Part(text=content)]))
+            # Используем простой dict вместо types.Content/Part
+            google_history.append({
+                'role': google_role,
+                'parts': [{'text': content}]
+            })
         
-        # Настройки безопасности (ИСПРАВЛЕНО - используем genai.*)
-        safety_settings = {
-            types.HarmCategory.HARM_CATEGORY_HATE_SPEECH: types.HarmBlockThreshold.BLOCK_NONE,
-            types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: types.HarmBlockThreshold.BLOCK_NONE,
-            types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: types.HarmBlockThreshold.BLOCK_NONE,
-            types.HarmCategory.HARM_CATEGORY_HARASSMENT: types.HarmBlockThreshold.BLOCK_NONE,
-        }
+        # Настройки безопасности: теперь тоже используем dict (более простой вариант)
+        safety_settings = [
+            {
+                "category": "HARM_CATEGORY_HATE_SPEECH",
+                "threshold": "BLOCK_NONE"
+            },
+            {
+                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                "threshold": "BLOCK_NONE"
+            },
+            {
+                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                "threshold": "BLOCK_NONE"
+            },
+            {
+                "category": "HARM_CATEGORY_HARASSMENT",
+                "threshold": "BLOCK_NONE"
+            }
+        ]
 
         # --- Синхронный вызов в отдельном потоке ---
         def sync_google_call():
@@ -256,9 +271,9 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
                 system_instruction=system_instruction
             )
             
-            # Отправляем всю историю (включая последнее сообщение пользователя)
+            # Отправляем всю историю (сообщения как список dict)
             response = model.generate_content(
-                google_history,
+                contents=google_history,
                 safety_settings=safety_settings
             )
             return response.text
@@ -280,7 +295,7 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
             # Не логгируем 'google_history' т.к. это сложный объект,
             # логгируем только длину и системную инструкцию для отладки
             "request_payload": {"model": model_to_use, "contents_len": len(google_history), "system_instruction": system_instruction},
-            "response_status": 200, # Успешно, если нет Exception
+            "response_status": 200,  # Успешно, если нет Exception
             "response_body": ai_response,
             "duration_seconds": response_time - request_time
         }
@@ -297,16 +312,15 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
             "channel_id": channel_id,
             "provider": "google",
             "model_used": model_to_use,
-            "response_status": 500, # Внутренняя ошибка
+            "response_status": 500,  # Внутренняя ошибка
             "error": str(e),
             "duration_seconds": response_time - request_time
         }
-        history.pop() # Удаляем сообщение пользователя, т.к. произошла ошибка
+        history.pop()  # Удаляем сообщение пользователя, т.к. произошла ошибка
         return "Чёт с Гуглом не то, не могу ответить. Попробуй позже.", history
     finally:
         if log_data:
             log_api_call(log_data)
-
 
 # --- ДИСПЕТЧЕР API ---
 
