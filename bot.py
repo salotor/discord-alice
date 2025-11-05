@@ -313,7 +313,32 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
                 contents=google_history,
                 safety_settings=safety_settings
             )
-            return response.text
+            
+            # --- (ИЗМЕНЕНО) Более надежная проверка ответа ---
+            if (response.candidates and 
+                response.candidates[0].content and
+                response.candidates[0].content.parts):
+                # Все в порядке, возвращаем текст
+                return response.candidates[0].content.parts[0].text
+            else:
+                # Ответа нет. Логгируем причину.
+                finish_reason_str = "UNKNOWN"
+                block_reason_str = "UNKNOWN"
+                
+                try:
+                    finish_reason = response.candidates[0].finish_reason
+                    finish_reason_str = finish_reason.name if hasattr(finish_reason, 'name') else str(finish_reason)
+                except Exception: pass
+                
+                try:
+                    block_reason = response.prompt_feedback.block_reason
+                    block_reason_str = block_reason.name if hasattr(block_reason, 'name') else str(block_reason)
+                except Exception: pass
+                
+                error_message = f"Google API не вернул контент. Finish Reason: {finish_reason_str}, Block Reason: {block_reason_str}"
+                print(f"ОШИБКА: {error_message}")
+                # Вызываем исключение, которое будет поймано внешним обработчиком
+                raise Exception(error_message)
 
         # Запускаем синхронную функцию в потоке, чтобы не блокировать asyncio
         ai_response = await asyncio.to_thread(sync_google_call)
@@ -354,7 +379,7 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
             "duration_seconds": response_time - request_time
         }
         history.pop()  # Удаляем сообщение пользователя, т.к. произошла ошибка
-        return "Чёт с Гуглом не то, не могу ответить. Попробуй позже.", history
+        return "Произошла ошибка при запросе к API Google. Попробуйте позже.", history
     finally:
         if log_data:
             log_api_call(log_data)
@@ -592,7 +617,3 @@ if __name__ == "__main__":
         client.run(DISCORD_TOKEN)
     else:
         client.run(DISCORD_TOKEN)
-
-
-
-
