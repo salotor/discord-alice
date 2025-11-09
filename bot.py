@@ -4,16 +4,19 @@ import json
 import aiohttp
 import time
 import asyncio # Добавлено для асинхронного запуска
+import re # <--- ДОБАВЛЕНО для парсинга времени ожидания
 from datetime import datetime
 from dotenv import load_dotenv
 
 # --- Новые импорты для Google API (ИСПРАВЛЕНО) ---
 try:
     import google.generativeai as genai
+    from google.api_core import exceptions as google_exceptions # <--- ДОБАВЛЕНО
     # from google.generativeai import types  # <--- Удалено, т.к. больше не используется в get_google_ai_response
     GOOGLE_API_AVAILABLE = True
 except ImportError:
     GOOGLE_API_AVAILABLE = False
+    google_exceptions = None # <--- ДОБАВЛЕНО
     print("ВНИМАНИЕ: Модуль 'google-generativeai' не найден. Модели Google API не будут работать.")
     print("Выполните 'pip install google-generativeai' для установки.")
 
@@ -228,6 +231,22 @@ async def get_openrouter_ai_response(history, user_id, user_name, channel_id, mo
                 else:
                     print(f"Ошибка API: {response.status} - {response_body}")
                     history.pop()
+                    # --- (ИЗМЕНЕНО) Обработка ошибки 429 для OpenRouter ---
+                    if response.status == 429:
+                        # Пытаемся извлечь 'retry-after' заголовок
+                        retry_after = response.headers.get('Retry-After')
+                        if retry_after:
+                            try:
+                                wait_time = int(retry_after)
+                                if wait_time < 60:
+                                    return f"Превышена квота (ошибка 429). Пожалуйста, попробуйте снова через {wait_time} секунд.", history
+                                else:
+                                    wait_minutes = (wait_time // 60) + 1
+                                    return f"Превышена квота (ошибка 429). Пожалуйста, попробуйте снова через {wait_minutes} минут.", history
+                            except ValueError:
+                                pass # Не удалось распарсить, вернем общее сообщение
+                        return "Превышена квота (ошибка 429). Пожалуйста, попробуйте позже.", history
+                    # --- ---
                     return "Произошла ошибка API, не могу ответить. Попробуйте позже.", history
     except Exception as e:
         print(f"Произошла ошибка при запросе к API: {e}")
@@ -238,7 +257,7 @@ async def get_openrouter_ai_response(history, user_id, user_name, channel_id, mo
         if log_data:
             log_api_call(log_data)
 
-# --- НОВАЯ Функция для взаимодействия с API Google (ИСПРАВЛЕНО) ---
+# --- НОВАЯ Функция для взаимодействия с API Google (ИСПРАВЛЕНО И ОБНОВЛЕНО) ---
 
 async def get_google_ai_response(history, user_id, user_name, channel_id, model_to_use, system_message):
     """Отправляет запрос к API Google (genai) и возвращает ответ."""
@@ -254,8 +273,6 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
         system_instruction = system_message['content']
         
         # --- Конвертация истории (ОБНОВЛЕНИЕ) ---
-        # В новых версиях genai история передаётся как список простых dict,
-        # а не прототипов types.Content/Part. Это делает код проще и совместимее.
         google_history = []
         for msg in history:
             role = msg['role']
@@ -264,43 +281,27 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
             if role == "user":
                 google_role = "user"
                 name = msg.get('name')
-                # Добавляем имя пользователя в контент для моделей Google
                 if name:
                     content = f"[{name}]: {content}"
             elif role == "assistant":
-                google_role = "model"  # У Google роль 'assistant' называется 'model'
+                google_role = "model"
             else:
-                continue  # Пропускаем неизвестные роли
+                continue 
 
-            # Используем простой dict вместо types.Content/Part
             google_history.append({
                 'role': google_role,
                 'parts': [{'text': content}]
             })
         
-        # Настройки безопасности: теперь тоже используем dict (более простой вариант)
         safety_settings = [
-            {
-                "category": "HARM_CATEGORY_HATE_SPEECH",
-                "threshold": "BLOCK_NONE"
-            },
-            {
-                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-                "threshold": "BLOCK_NONE"
-            },
-            {
-                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                "threshold": "BLOCK_NONE"
-            },
-            {
-                "category": "HARM_CATEGORY_HARASSMENT",
-                "threshold": "BLOCK_NONE"
-            }
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"}
         ]
 
         # --- Синхронный вызов в отдельном потоке ---
         def sync_google_call():
-            # Конфигурируем API ключ (важно для 'genai')
             genai.configure(api_key=GEMINI_API_KEY)
             
             model = genai.GenerativeModel(
@@ -308,20 +309,16 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
                 system_instruction=system_instruction
             )
             
-            # Отправляем всю историю (сообщения как список dict)
             response = model.generate_content(
                 contents=google_history,
                 safety_settings=safety_settings
             )
             
-            # --- (ИЗМЕНЕНО) Более надежная проверка ответа ---
             if (response.candidates and 
                 response.candidates[0].content and
                 response.candidates[0].content.parts):
-                # Все в порядке, возвращаем текст
                 return response.candidates[0].content.parts[0].text
             else:
-                # Ответа нет. Логгируем причину.
                 finish_reason_str = "UNKNOWN"
                 block_reason_str = "UNKNOWN"
                 
@@ -337,10 +334,8 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
                 
                 error_message = f"Google API не вернул контент. Finish Reason: {finish_reason_str}, Block Reason: {block_reason_str}"
                 print(f"ОШИБКА: {error_message}")
-                # Вызываем исключение, которое будет поймано внешним обработчиком
                 raise Exception(error_message)
 
-        # Запускаем синхронную функцию в потоке, чтобы не блокировать asyncio
         ai_response = await asyncio.to_thread(sync_google_call)
         response_time = time.time()
         # --- Конец вызова ---
@@ -354,19 +349,50 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
             "channel_id": channel_id,
             "provider": "google",
             "model_used": model_to_use,
-            # Не логгируем 'google_history' т.к. это сложный объект,
-            # логгируем только длину и системную инструкцию для отладки
             "request_payload": {"model": model_to_use, "contents_len": len(google_history), "system_instruction": system_instruction},
-            "response_status": 200,  # Успешно, если нет Exception
+            "response_status": 200,
             "response_body": ai_response,
             "duration_seconds": response_time - request_time
         }
         
         return ai_response, history
 
+    # --- (ИЗМЕНЕНО) ОБРАБОТКА ОШИБОК API ---
     except Exception as e:
-        print(f"Произошла ошибка при запросе к API Google: {e}")
         response_time = time.time()
+        error_message = "Произошла ошибка при запросе к API Google. Попробуйте позже."
+        status_code = 500 # По умолчанию
+
+        # --- НОВЫЙ БЛОК ОБРАБОТКИ ОШИБКИ 429 ---
+        if GOOGLE_API_AVAILABLE and isinstance(e, google_exceptions.ResourceExhausted):
+            status_code = 429
+            print(f"Ошибка 429 (Превышена квота) от API Google: {e}")
+            
+            retry_seconds = None
+            # Пытаемся распарсить сообщение об ошибке, как в логе пользователя
+            # "Please retry in 26.402377853s."
+            match = re.search(r"Please retry in (\d+(\.\d+)?)s", str(e))
+            
+            if match:
+                try:
+                    retry_seconds = float(match.group(1))
+                except (ValueError, IndexError):
+                    pass # Оставим retry_seconds = None
+
+            if retry_seconds is not None:
+                wait_time = int(retry_seconds) + 1 # Округляем в большую сторону
+                if wait_time < 60:
+                    error_message = f"Превышена квота (ошибка 429). Пожалуйста, попробуйте снова через {wait_time} секунд."
+                else:
+                    wait_minutes = (wait_time // 60) + 1
+                    error_message = f"Превышена квота (ошибка 429). Пожалуйста, попробуйте снова через {wait_minutes} минут."
+            else:
+                error_message = "Превышена квота (ошибка 429). Пожалуйста, попробуйте позже."
+        # --- КОНЕЦ НОВОГО БЛОКА 429 ---
+        else:
+            # Обычная ошибка
+            print(f"Произошла ошибка при запросе к API Google: {e}")
+
         log_data = {
             "timestamp_utc": datetime.utcnow().isoformat(),
             "user_id": user_id,
@@ -374,12 +400,13 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
             "channel_id": channel_id,
             "provider": "google",
             "model_used": model_to_use,
-            "response_status": 500,  # Внутренняя ошибка
+            "response_status": status_code,
             "error": str(e),
             "duration_seconds": response_time - request_time
         }
         history.pop()  # Удаляем сообщение пользователя, т.к. произошла ошибка
-        return "Произошла ошибка при запросе к API Google. Попробуйте позже.", history
+        return error_message, history
+    # --- ---
     finally:
         if log_data:
             log_api_call(log_data)
@@ -617,4 +644,3 @@ if __name__ == "__main__":
         client.run(DISCORD_TOKEN)
     else:
         client.run(DISCORD_TOKEN)
-
