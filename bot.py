@@ -176,6 +176,7 @@ channel_models, channel_context_limits, show_model_name, channel_profiles = read
 # --- Настройка клиента Discord ---
 intents = discord.Intents.default()
 intents.message_content = True
+intents.guilds = True # <--- ДОБАВЛЕНО: Разрешение на получение списка серверов
 client = discord.Client(intents=intents)
 
 def trim_context(messages, limit):
@@ -545,6 +546,32 @@ async def on_message(message):
             return
         # --- КОНЕЦ НОВЫХ КОМАНД ---
 
+        # --- НОВАЯ КОМАНДА СПИСКА СЕРВЕРОВ ---
+        if message.content == '!list_servers_bot':
+            try:
+                guilds = client.guilds
+                if not guilds:
+                    await message.channel.send("Бот (пока) не находится ни на одном сервере.")
+                    return
+
+                response = f"**Бот находится на {len(guilds)} серверах:**\n\n"
+                guild_list = []
+                for guild in guilds:
+                    guild_list.append(f"▫️ **{guild.name}** (ID: `{guild.id}`)")
+                
+                response += "\n".join(guild_list)
+                
+                # Сообщения Discord имеют лимит в 2000 символов
+                if len(response) > 2000:
+                    await message.channel.send(f"Бот на {len(guilds)} серверах. Список слишком длинный для одного сообщения (превышено 2000 символов).")
+                else:
+                    await message.channel.send(response)
+            except Exception as e:
+                await message.channel.send(f"Не удалось получить список серверов: {e}")
+            return
+        # --- КОНЕЦ НОВОЙ КОМАНДЫ ---
+
+
         if message.content == '!help_bot':
             help_text = (
                 "**Команды управления ботом (только для владельца):**\n\n"
@@ -557,6 +584,7 @@ async def on_message(message):
                 "`!set_profile_bot <имя>` - Установить активный профиль для текущего канала (сбрасывает контекст).\n"
                 "`!set_context_bot <число>` - Установить размер контекста (в сообщениях) для текущего канала.\n"
                 "`!toggle_info_bot` - Включить/выключить отображение информации (профиль и модель) в сообщениях.\n"
+                "`!list_servers_bot` - Показать список серверов, на которых находится бот.\n" # <--- ДОБАВЛЕНО
                 "`!help_bot` - Показать это сообщение."
             )
             await message.channel.send(help_text)
