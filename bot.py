@@ -48,19 +48,25 @@ AVAILABLE_MODELS = {
     "gpt4o": "openai/gpt-4o-mini",
 
     # --- Модели Google API ---
-    "gemini_pro": "gemini-2.5-pro",
-    "gemini_flash": "gemini-2.5-flash",
-    "gemini_lite": "gemini-2.5-flash-lite"
+    "gemini": "gemini-3-flash" # Единая модель с фолбэком
 }
+
+# Цепочка фолбэка для Google моделей
+GEMINI_FALLBACK_CHAIN = [
+    "gemini-3-flash",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite"
+]
+
 # Модели, которые будут использовать Google API (по полному имени модели)
 GOOGLE_API_MODELS = {
-    "gemini-2.5-pro",
+    "gemini-3-flash",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite"
 }
 
 # Модель по умолчанию
-default_model = AVAILABLE_MODELS["gemini_flash"] # Изменено на новую модель Google
+default_model = AVAILABLE_MODELS["gemini"] # Изменено на новую модель Google
 # --- ---
 
 # --- Определение Профилей ---
@@ -261,156 +267,177 @@ async def get_openrouter_ai_response(history, user_id, user_name, channel_id, mo
 # --- НОВАЯ Функция для взаимодействия с API Google (ИСПРАВЛЕНО И ОБНОВЛЕНО) ---
 
 async def get_google_ai_response(history, user_id, user_name, channel_id, model_to_use, system_message):
-    """Отправляет запрос к API Google (genai) и возвращает ответ."""
+    """Отправляет запрос к API Google (genai) и возвращает ответ с поддержкой фолбэка."""
     
     request_time = time.time()
     log_data = {}
     
     if not GOOGLE_API_AVAILABLE:
-        history.pop()  # Удаляем сообщение пользователя, т.к. мы не можем его обработать
+        history.pop()
         return "Модуль 'google-genai' не найден. Не могу обработать запрос.", history
 
-    try:
-        system_instruction = system_message['content']
+    # Определение цепочки моделей для использования
+    if model_to_use in GEMINI_FALLBACK_CHAIN:
+        # Если модель в цепочке, начинаем с неё и идем до конца списка
+        # Например, если запросили gemini-2.5-flash, то пропустим gemini-3-flash
+        try:
+            start_index = GEMINI_FALLBACK_CHAIN.index(model_to_use)
+            models_to_try = GEMINI_FALLBACK_CHAIN[start_index:]
+        except ValueError:
+             models_to_try = [model_to_use] # На всякий случай
+    else:
+        models_to_try = [model_to_use]
         
-        # --- Конвертация истории (ОБНОВЛЕНИЕ) ---
-        google_history = []
-        for msg in history:
-            role = msg['role']
-            content = msg['content']
-            
-            if role == "user":
-                google_role = "user"
-                name = msg.get('name')
-                if name:
-                    content = f"[{name}]: {content}"
-            elif role == "assistant":
-                google_role = "model"
-            else:
-                continue 
+    print(f"DEBUG: Запрос к Google AI. Цепочка моделей: {models_to_try}")
 
-            google_history.append({
-                'role': google_role,
-                'parts': [{'text': content}]
-            })
+    last_exception = None
+    
+    # --- Конвертация истории (один раз для всех попыток) ---
+    system_instruction = system_message['content']
+    google_history = []
+    for msg in history:
+        role = msg['role']
+        content = msg['content']
         
-        safety_settings = [
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"}
-        ]
-
-        # --- Синхронный вызов в отдельном потоке ---
-        def sync_google_call():
-            genai.configure(api_key=GEMINI_API_KEY)
-            
-            model = genai.GenerativeModel(
-                model_name=model_to_use,
-                system_instruction=system_instruction
-            )
-            
-            response = model.generate_content(
-                contents=google_history,
-                safety_settings=safety_settings
-            )
-            
-            if (response.candidates and 
-                response.candidates[0].content and
-                response.candidates[0].content.parts):
-                return response.candidates[0].content.parts[0].text
-            else:
-                finish_reason_str = "UNKNOWN"
-                block_reason_str = "UNKNOWN"
-                
-                try:
-                    finish_reason = response.candidates[0].finish_reason
-                    finish_reason_str = finish_reason.name if hasattr(finish_reason, 'name') else str(finish_reason)
-                except Exception: pass
-                
-                try:
-                    block_reason = response.prompt_feedback.block_reason
-                    block_reason_str = block_reason.name if hasattr(block_reason, 'name') else str(block_reason)
-                except Exception: pass
-                
-                error_message = f"Google API не вернул контент. Finish Reason: {finish_reason_str}, Block Reason: {block_reason_str}"
-                print(f"ОШИБКА: {error_message}")
-                raise Exception(error_message)
-
-        ai_response = await asyncio.to_thread(sync_google_call)
-        response_time = time.time()
-        # --- Конец вызова ---
-
-        history.append({"role": "assistant", "content": ai_response})
-        
-        log_data = {
-            "timestamp_utc": datetime.utcnow().isoformat(),
-            "user_id": user_id,
-            "user_name": user_name,
-            "channel_id": channel_id,
-            "provider": "google",
-            "model_used": model_to_use,
-            "request_payload": {"model": model_to_use, "contents_len": len(google_history), "system_instruction": system_instruction},
-            "response_status": 200,
-            "response_body": ai_response,
-            "duration_seconds": response_time - request_time
-        }
-        
-        return ai_response, history
-
-    # --- (ИЗМЕНЕНО) ОБРАБОТКА ОШИБОК API ---
-    except Exception as e:
-        response_time = time.time()
-        error_message = "Произошла ошибка при запросе к API Google. Попробуйте позже."
-        status_code = 500 # По умолчанию
-
-        # --- НОВЫЙ БЛОК ОБРАБОТКИ ОШИБКИ 429 ---
-        if GOOGLE_API_AVAILABLE and isinstance(e, google_exceptions.ResourceExhausted):
-            status_code = 429
-            print(f"Ошибка 429 (Превышена квота) от API Google: {e}")
-            
-            retry_seconds = None
-            # Пытаемся распарсить сообщение об ошибке, как в логе пользователя
-            # "Please retry in 26.402377853s."
-            match = re.search(r"Please retry in (\d+(\.\d+)?)s", str(e))
-            
-            if match:
-                try:
-                    retry_seconds = float(match.group(1))
-                except (ValueError, IndexError):
-                    pass # Оставим retry_seconds = None
-
-            if retry_seconds is not None:
-                wait_time = int(retry_seconds) + 1 # Округляем в большую сторону
-                if wait_time < 60:
-                    error_message = f"Превышена квота (ошибка 429). Пожалуйста, попробуйте снова через {wait_time} секунд."
-                else:
-                    wait_minutes = (wait_time // 60) + 1
-                    error_message = f"Превышена квота (ошибка 429). Пожалуйста, попробуйте снова через {wait_minutes} минут."
-            else:
-                error_message = "Превышена квота (ошибка 429). Пожалуйста, попробуйте позже."
-        # --- КОНЕЦ НОВОГО БЛОКА 429 ---
+        if role == "user":
+            google_role = "user"
+            name = msg.get('name')
+            if name:
+                content = f"[{name}]: {content}"
+        elif role == "assistant":
+            google_role = "model"
         else:
-            # Обычная ошибка
-            print(f"Произошла ошибка при запросе к API Google: {e}")
+            continue 
 
-        log_data = {
-            "timestamp_utc": datetime.utcnow().isoformat(),
-            "user_id": user_id,
-            "user_name": user_name,
-            "channel_id": channel_id,
-            "provider": "google",
-            "model_used": model_to_use,
-            "response_status": status_code,
-            "error": str(e),
-            "duration_seconds": response_time - request_time
-        }
-        history.pop()  # Удаляем сообщение пользователя, т.к. произошла ошибка
-        return error_message, history
-    # --- ---
-    finally:
-        if log_data:
+        google_history.append({
+            'role': google_role,
+            'parts': [{'text': content}]
+        })
+    
+    safety_settings = [
+        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"}
+    ]
+
+    # --- Цикл по моделям ---
+    for current_model in models_to_try:
+        try:
+            # --- Синхронный вызов в отдельном потоке ---
+            def sync_google_call(model_name):
+                genai.configure(api_key=GEMINI_API_KEY)
+                
+                model = genai.GenerativeModel(
+                    model_name=model_name,
+                    system_instruction=system_instruction
+                )
+                
+                response = model.generate_content(
+                    contents=google_history,
+                    safety_settings=safety_settings
+                )
+                
+                if (response.candidates and 
+                    response.candidates[0].content and
+                    response.candidates[0].content.parts):
+                    return response.candidates[0].content.parts[0].text
+                else:
+                    finish_reason_str = "UNKNOWN"
+                    block_reason_str = "UNKNOWN"
+                    
+                    try:
+                        finish_reason = response.candidates[0].finish_reason
+                        finish_reason_str = finish_reason.name if hasattr(finish_reason, 'name') else str(finish_reason)
+                    except Exception: pass
+                    
+                    try:
+                        block_reason = response.prompt_feedback.block_reason
+                        block_reason_str = block_reason.name if hasattr(block_reason, 'name') else str(block_reason)
+                    except Exception: pass
+                    
+                    error_message = f"Google API не вернул контент. Finish Reason: {finish_reason_str}, Block Reason: {block_reason_str}"
+                    print(f"ОШИБКА ({model_name}): {error_message}")
+                    raise Exception(error_message)
+
+            print(f"Попытка использования модели: {current_model}")
+            ai_response = await asyncio.to_thread(sync_google_call, current_model)
+            response_time = time.time()
+            
+            # Успешный ответ
+            history.append({"role": "assistant", "content": ai_response})
+            
+            log_data = {
+                "timestamp_utc": datetime.utcnow().isoformat(),
+                "user_id": user_id,
+                "user_name": user_name,
+                "channel_id": channel_id,
+                "provider": "google",
+                "model_used": current_model,
+                "request_payload": {"model": current_model, "contents_len": len(google_history)},
+                "response_status": 200,
+                "response_body": ai_response,
+                "duration_seconds": response_time - request_time
+            }
+             # Логируем и выходим из функции при успехе
             log_api_call(log_data)
+            return ai_response, history
+
+        except Exception as e:
+            last_exception = e
+            # Проверяем, является ли ошибка исчерпанием ресурсов (429)
+            if isinstance(e, google_exceptions.ResourceExhausted):
+                 print(f"⚠️ Модель {current_model} исчерпала лимиты (429).")
+                 # Если это не последняя модель в списке, продолжаем цикл
+                 if current_model != models_to_try[-1]:
+                     print(f"🔄 Переключение на следующую модель...")
+                     continue
+            
+            # Если ошибка другая или модели закончились - логика выхода ниже
+            print(f"❌ Ошибка с моделью {current_model}: {e}")
+            if current_model != models_to_try[-1]:
+                 # Для надежности попробуем переключиться и при других ошибках? 
+                 # ТЗ требовало переключения "Если исчерпались лимиты".
+                 # Но для стабильности можно пробовать следующую, если это не 429, но что-то странное?
+                 # Пока строго следуем ТЗ: фолбэк при исчерпании лимитов.
+                 # А, стоп. ResourceExhausted - это и есть лимиты.
+                 pass
+
+    # --- Все попытки исчерпаны ---
+    response_time = time.time()
+    error_message = "Произошла ошибка при запросе к API Google. Попробуйте позже."
+    status_code = 500
+
+    # Обработка последней ошибки для пользователя
+    if last_exception and isinstance(last_exception, google_exceptions.ResourceExhausted):
+        status_code = 429
+        # Парсинг времени ожидания из последней ошибки
+        retry_seconds = None
+        match = re.search(r"Please retry in (\d+(\.\d+)?)s", str(last_exception))
+        if match:
+             try: retry_seconds = float(match.group(1))
+             except: pass
+        
+        if retry_seconds:
+             wait_time = int(retry_seconds) + 1
+             error_message = f"Все модели Google перегружены. Попробуйте через {wait_time} с."
+        else:
+             error_message = "Все модели Google перегружены. Попробуйте позже."
+    
+    log_data = {
+        "timestamp_utc": datetime.utcnow().isoformat(),
+        "user_id": user_id,
+        "user_name": user_name,
+        "channel_id": channel_id,
+        "provider": "google",
+        "model_used": f"FAILED_CHAIN_{models_to_try[0]}",
+        "response_status": status_code,
+        "error": str(last_exception),
+        "duration_seconds": response_time - request_time
+    }
+    log_api_call(log_data)
+    history.pop()
+    return error_message, history
 
 # --- ДИСПЕТЧЕР API ---
 
