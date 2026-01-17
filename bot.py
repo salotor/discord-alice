@@ -48,21 +48,21 @@ AVAILABLE_MODELS = {
     "gpt4o": "openai/gpt-4o-mini",
 
     # --- Модели Google API ---
-    "gemini": "gemini-3-flash" # Единая модель с фолбэком
+    "gemini": "gemini-3-flash-preview" # Единая модель с фолбэком
 }
 
 # Цепочка фолбэка для Google моделей
 GEMINI_FALLBACK_CHAIN = [
-    "gemini-3-flash",
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite"
+    "gemini-3-flash-preview",
+    "gemini-flash-latest",
+    "gemini-flash-lite-latest",
 ]
 
 # Модели, которые будут использовать Google API (по полному имени модели)
 GOOGLE_API_MODELS = {
-    "gemini-3-flash",
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite"
+    "gemini-3-flash-preview",
+    "gemini-flash-latest",
+    "gemini-flash-lite-latest",
 }
 
 # Модель по умолчанию
