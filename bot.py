@@ -152,17 +152,18 @@ def read_settings():
             models = {int(k): v for k, v in data.get('channel_models', {}).items()}
             limits = {int(k): v for k, v in data.get('channel_context_limits', {}).items()}
             profiles = {int(k): v for k, v in data.get('channel_profiles', {}).items()}
-            show_model = data.get('show_model_name', True)
-            return models, limits, show_model, profiles
+            # (ИЗМЕНЕНО) Теперь читаем настройки отображения как словарь по каналам
+            show_infos = {int(k): v for k, v in data.get('channel_show_infos', {}).items()}
+            return models, limits, show_infos, profiles
     except (FileNotFoundError, json.JSONDecodeError):
-        return {}, {}, True, {}
+        return {}, {}, {}, {}
 
-def write_settings(models, limits, show_model, profiles):
+def write_settings(models, limits, show_infos, profiles):
     """Записывает настройки каналов в файл."""
     data = {
         'channel_models': models,
         'channel_context_limits': limits,
-        'show_model_name': show_model,
+        'channel_show_infos': show_infos, # (ИЗМЕНЕНО) Сохраняем словарь
         'channel_profiles': profiles
     }
     with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
@@ -177,7 +178,7 @@ def log_api_call(log_data):
         print(f"Ошибка при записи в лог-файл: {e}")
 
 # --- Загрузка настроек при старте ---
-channel_models, channel_context_limits, show_model_name, channel_profiles = read_settings()
+channel_models, channel_context_limits, channel_show_infos, channel_profiles = read_settings()
 
 # --- Настройка клиента Discord ---
 intents = discord.Intents.default()
@@ -472,12 +473,12 @@ async def on_ready():
     print(f'Загружено {len(channel_models)} настроек моделей для каналов.')
     print(f'Загружено {len(channel_context_limits)} настроек контекста для каналов.')
     print(f'Загружено {len(channel_profiles)} настроек профилей для каналов.')
-    print(f'Отображение модели: {"Включено" if show_model_name else "Выключено"}')
+    print(f'Загружено {len(channel_show_infos)} настроек отображения инфо для каналов.')
 
 @client.event
 async def on_message(message):
     """Событие, которое срабатывает на каждое новое сообщение."""
-    global bot_active, channel_models, channel_context_limits, show_model_name, channel_profiles
+    global bot_active, channel_models, channel_context_limits, channel_show_infos, channel_profiles
     
     if message.author == client.user:
         return
@@ -500,10 +501,16 @@ async def on_message(message):
             return
 
         if message.content == '!toggle_info_bot':
-            show_model_name = not show_model_name
-            write_settings(channel_models, channel_context_limits, show_model_name, channel_profiles)
-            status = "включено" if show_model_name else "выключено"
-            await message.channel.send(f"Отображение информации (профиль и модель) в конце сообщений **{status}**.")
+            channel_id = message.channel.id
+            # (ИЗМЕНЕНО) Логика переключения для конкретного канала
+            current_setting = channel_show_infos.get(channel_id, True) # По умолчанию включено
+            new_setting = not current_setting
+            channel_show_infos[channel_id] = new_setting
+            
+            write_settings(channel_models, channel_context_limits, channel_show_infos, channel_profiles)
+            
+            status = "включено" if new_setting else "выключено"
+            await message.channel.send(f"Отображение информации (профиль и модель) для этого канала **{status}**.")
             return
 
         if message.content.startswith('!set_model_bot '):
@@ -514,7 +521,7 @@ async def on_message(message):
                     channel_id = message.channel.id
                     channel_models[channel_id] = AVAILABLE_MODELS[model_alias]
                     write_context(channel_id, []) # Сброс контекста при смене модели
-                    write_settings(channel_models, channel_context_limits, show_model_name, channel_profiles)
+                    write_settings(channel_models, channel_context_limits, channel_show_infos, channel_profiles)
                     await message.channel.send(f"Модель для этого канала изменена на: `{channel_models[channel_id]}`. Контекст сброшен.")
                 else:
                     await message.channel.send(f"Неизвестный псевдоним модели: `{model_alias}`. Используйте `!list_models_bot`.")
@@ -530,7 +537,7 @@ async def on_message(message):
                     if limit > 0:
                         channel_id = message.channel.id
                         channel_context_limits[channel_id] = limit
-                        write_settings(channel_models, channel_context_limits, show_model_name, channel_profiles)
+                        write_settings(channel_models, channel_context_limits, channel_show_infos, channel_profiles)
                         await message.channel.send(f"Размер контекста для этого канала установлен на {limit} сообщений.")
                     else:
                         await message.channel.send("Размер контекста должен быть положительным числом.")
@@ -564,7 +571,7 @@ async def on_message(message):
                     channel_id = message.channel.id
                     channel_profiles[channel_id] = profile_name
                     write_context(channel_id, []) # Сброс контекста при смене профиля
-                    write_settings(channel_models, channel_context_limits, show_model_name, channel_profiles)
+                    write_settings(channel_models, channel_context_limits, channel_show_infos, channel_profiles)
                     await message.channel.send(f"Профиль для этого канала изменен на: `{profile_name}`. Контекст сброшен.")
                 else:
                     await message.channel.send(f"Неизвестное имя профиля: `{profile_name}`. Используйте `!list_profiles_bot`.")
@@ -610,7 +617,7 @@ async def on_message(message):
                 "`!list_profiles_bot` - Показать список доступных профилей.\n"
                 "`!set_profile_bot <имя>` - Установить активный профиль для текущего канала (сбрасывает контекст).\n"
                 "`!set_context_bot <число>` - Установить размер контекста (в сообщениях) для текущего канала.\n"
-                "`!toggle_info_bot` - Включить/выключить отображение информации (профиль и модель) в сообщениях.\n"
+                "`!toggle_info_bot` - Включить/выключить отображение информации (профиль и модель) в сообщениях **для текущего канала**.\n"
                 "`!list_servers_bot` - Показать список серверов, на которых находится бот.\n" # <--- ДОБАВЛЕНО
                 "`!help_bot` - Показать это сообщение."
             )
@@ -677,7 +684,10 @@ async def on_message(message):
         
         if response_text:
             final_response = response_text
-            if show_model_name:
+            # (ИЗМЕНЕНО) Проверяем настройку для текущего канала
+            should_show_info = channel_show_infos.get(channel_id, True) # По умолчанию True
+            
+            if should_show_info:
                 model_alias = "unknown"
                 for alias, model_name in AVAILABLE_MODELS.items():
                     if model_name == model_for_channel:
