@@ -63,6 +63,7 @@ GOOGLE_API_MODELS = {
     "gemini-3-flash-preview",
     "gemini-flash-latest",
     "gemini-flash-lite-latest",
+    "gemma-3-27b-it", # Добавлено для поддержки Gemma
 }
 
 # Отображаемые имена моделей (короткие)
@@ -70,6 +71,7 @@ MODEL_DISPLAY_NAMES = {
     "gemini-3-flash-preview": "gemini 3.0 flash",
     "gemini-flash-latest": "gemini 2.5 flash",
     "gemini-flash-lite-latest": "gemini 2.5 flash lite",
+    "gemma-3-27b-it": "gemma 3", # Короткое имя для Gemma
 }
 
 # Модель по умолчанию
@@ -716,8 +718,8 @@ async def on_message(message):
                 # Получаем короткое имя модели для отображения
                 display_model = MODEL_DISPLAY_NAMES.get(actual_model_used, actual_model_used)
                 
-                # Формат: `Алиса (gemini 3.0 flash, контекст: 20)`
-                final_response += f"\n\n`{display_profile} ({display_model}, контекст: {context_limit})`"
+                # Формат: ||Алиса (gemini 3.0 flash, контекст: 20)||
+                final_response += f"\n\n||{display_profile} ({display_model}, контекст: {context_limit})||"
             
             await message.reply(final_response, mention_author=False)
 
