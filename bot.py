@@ -65,17 +65,24 @@ GOOGLE_API_MODELS = {
     "gemini-flash-lite-latest",
 }
 
+# Отображаемые имена моделей (короткие)
+MODEL_DISPLAY_NAMES = {
+    "gemini-3-flash-preview": "gemini 3.0 flash",
+    "gemini-flash-latest": "gemini 2.5 flash",
+    "gemini-flash-lite-latest": "gemini 2.5 flash lite",
+}
+
 # Модель по умолчанию
 default_model = AVAILABLE_MODELS["gemini"] # Изменено на новую модель Google
 # --- ---
 
 # --- Определение Профилей ---
-DEFAULT_PROFILE = "alisa"
+DEFAULT_PROFILE = "alisa_adv"
 
 # Отображаемые имена профилей для подписи
 PROFILE_DISPLAY_NAMES = {
-    "alisa": "Алиса",
-    "alisa_adv": "Алиса (Adv)",
+    "alisa": "Алиса (old)",
+    "alisa_adv": "Алиса",
     "lena": "Лена",
     "slavya": "Славя",
     "miku": "Мику",
@@ -434,9 +441,9 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
         
         if retry_seconds:
              wait_time = int(retry_seconds) + 1
-             error_message = f"Все модели Google перегружены. Попробуйте через {wait_time} с."
+             error_message = f"Лимит запросов к Google API временно исчерпан. Попробуйте через {wait_time} с."
         else:
-             error_message = "Все модели Google перегружены. Попробуйте позже."
+             error_message = "Исчерпан лимит запросов к Google API (вероятно, дневной). Попробуйте позже."
     
     log_data = {
         "timestamp_utc": datetime.utcnow().isoformat(),
@@ -706,9 +713,11 @@ async def on_message(message):
                 # Получаем красивое имя профиля или капитализируем ключ
                 display_profile = PROFILE_DISPLAY_NAMES.get(active_profile_name, active_profile_name.capitalize())
                 
-                # Формат: `Алиса (gemini-3-flash-preview, контекст: 20)`
-                # Используем actual_model_used, чтобы показать реальную модель (например, если сработал фолбэк)
-                final_response += f"\n\n`{display_profile} ({actual_model_used}, контекст: {context_limit})`"
+                # Получаем короткое имя модели для отображения
+                display_model = MODEL_DISPLAY_NAMES.get(actual_model_used, actual_model_used)
+                
+                # Формат: `Алиса (gemini 3.0 flash, контекст: 20)`
+                final_response += f"\n\n`{display_profile} ({display_model}, контекст: {context_limit})`"
             
             await message.reply(final_response, mention_author=False)
 
