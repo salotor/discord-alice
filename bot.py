@@ -357,13 +357,42 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
             def sync_google_call(model_name):
                 genai.configure(api_key=GEMINI_API_KEY)
                 
-                model = genai.GenerativeModel(
-                    model_name=model_name,
-                    system_instruction=system_instruction
-                )
+                # --- ИЗМЕНЕНИЕ: Обработка для Gemma (не поддерживает system_instruction) ---
+                if "gemma" in model_name.lower():
+                    # Инициализируем без system_instruction
+                    model = genai.GenerativeModel(model_name=model_name)
+                    
+                    # Создаем локальную копию истории, чтобы не испортить оригинал
+                    local_history = [dict(msg) for msg in google_history]
+                    
+                    # Формируем текст системной инструкции
+                    sys_text = f"{system_instruction}\n\n"
+                    
+                    # Внедряем инструкцию в начало истории
+                    if local_history and local_history[0]['role'] == 'user':
+                        # Если первое сообщение от юзера, склеиваем с ним (безопасно для очередности User-Model)
+                        original_text = local_history[0]['parts'][0]['text']
+                        local_history[0] = {
+                            'role': 'user', 
+                            'parts': [{'text': sys_text + original_text}]
+                        }
+                    else:
+                        # Если история пуста или начинается с модели, добавляем новое сообщение в начало
+                        local_history.insert(0, {
+                            'role': 'user', 
+                            'parts': [{'text': sys_text.strip()}]
+                        })
+                else:
+                    # Стандартная инициализация для Gemini
+                    model = genai.GenerativeModel(
+                        model_name=model_name,
+                        system_instruction=system_instruction
+                    )
+                    local_history = google_history
+                # --- КОНЕЦ ИЗМЕНЕНИЯ ---
                 
                 response = model.generate_content(
-                    contents=google_history,
+                    contents=local_history,
                     safety_settings=safety_settings
                 )
                 
