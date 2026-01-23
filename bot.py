@@ -57,6 +57,7 @@ GEMINI_FALLBACK_CHAIN = [
     "gemini-3-flash-preview",
     "gemini-flash-latest",
     "gemini-flash-lite-latest",
+    "gemma-3-27b-it", # <--- ДОБАВЛЕНО: теперь это 4-й вариант при ошибках
 ]
 
 # Модели, которые будут использовать Google API (по полному имени модели)
