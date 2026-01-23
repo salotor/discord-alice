@@ -5,6 +5,7 @@ import aiohttp
 import time
 import asyncio # Добавлено для асинхронного запуска
 import re # <--- ДОБАВЛЕНО для парсинга времени ожидания
+import random # <--- ДОБАВЛЕНО для режима Сплит
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -89,7 +90,8 @@ PROFILE_DISPLAY_NAMES = {
     "slavya": "Славя",
     "miku": "Мику",
     "olga": "Ольга",
-    "ulyana": "Ульяна"
+    "ulyana": "Ульяна",
+    "split": "Сплит" # <--- Добавлено имя для Сплита
 }
 
 # Системная инструкция для ИИ (Алиса).
@@ -136,7 +138,8 @@ SYSTEM_PROFILES = {
     "slavya": SLAVYA_PROMPT_JSON,
     "miku": MIKU_PROMPT_JSON,
     "olga": OLGA_PROMPT_JSON,
-    "ulyana": ULYANA_PROMPT_JSON # <--- ДОБАВЛЕНО
+    "ulyana": ULYANA_PROMPT_JSON,
+    "split": "{}" # <--- Пустой JSON, т.к. "Сплит" обрабатывается программно
 }
 
 bot_active = False # Статус бота (включен/выключен)
@@ -681,13 +684,24 @@ async def on_message(message):
         
         # --- Определение системного промпта на основе профиля канала ---
         active_profile_name = channel_profiles.get(channel_id, DEFAULT_PROFILE)
-        # Получаем JSON-строку промпта, с фолбэком на дефолтный профиль
-        profile_json_string = SYSTEM_PROFILES.get(active_profile_name, SYSTEM_PROFILES[DEFAULT_PROFILE])
+        
+        # <--- НОВАЯ ЛОГИКА ДЛЯ ПРОФИЛЯ 'SPLIT' --->
+        current_request_profile_name = active_profile_name
+        
+        if active_profile_name == "split":
+            # Исключаем 'split' из списка выбора, чтобы не было рекурсии
+            available_choices = [p for p in SYSTEM_PROFILES.keys() if p != "split"]
+            if available_choices:
+                current_request_profile_name = random.choice(available_choices)
+        # <--- КОНЕЦ НОВОЙ ЛОГИКИ --->
+
+        # Получаем JSON-строку промпта (используем фактически выбранный профиль)
+        profile_json_string = SYSTEM_PROFILES.get(current_request_profile_name, SYSTEM_PROFILES[DEFAULT_PROFILE])
         
         try:
             system_message_obj = json.loads(profile_json_string)
         except json.JSONDecodeError as e:
-            print(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось распарсить JSON профиля '{active_profile_name}'. Ошибка: {e}. Используется '{DEFAULT_PROFILE}'.")
+            print(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось распарсить JSON профиля '{current_request_profile_name}'. Ошибка: {e}. Используется '{DEFAULT_PROFILE}'.")
             # Гарантированный фолбэк на рабочий профиль по умолчанию
             system_message_obj = json.loads(SYSTEM_PROFILES[DEFAULT_PROFILE])
         # --- ---
@@ -712,8 +726,13 @@ async def on_message(message):
             should_show_info = channel_show_infos.get(channel_id, True) # По умолчанию True
             
             if should_show_info:
-                # Получаем красивое имя профиля или капитализируем ключ
-                display_profile = PROFILE_DISPLAY_NAMES.get(active_profile_name, active_profile_name.capitalize())
+                # Получаем красивое имя профиля
+                if active_profile_name == "split":
+                    # Если режим сплит, показываем "Сплит (Реальное имя)"
+                    real_name_display = PROFILE_DISPLAY_NAMES.get(current_request_profile_name, current_request_profile_name.capitalize())
+                    display_profile = f"Сплит -> {real_name_display}"
+                else:
+                    display_profile = PROFILE_DISPLAY_NAMES.get(active_profile_name, active_profile_name.capitalize())
                 
                 # Получаем короткое имя модели для отображения
                 display_model = MODEL_DISPLAY_NAMES.get(actual_model_used, actual_model_used)
