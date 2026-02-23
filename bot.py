@@ -36,8 +36,13 @@ CONTEXT_FILE = 'context.json'
 SETTINGS_FILE = 'settings.json'
 LOGS_FILE = 'api_logs.jsonl' # Файл для логов
 DEFAULT_CONTEXT_MESSAGE_LIMIT = 10 # Максимальное количество сообщений в контексте по умолчанию
-MESSAGE_LIMIT_PER_HOUR = 30 # Лимит сообщений в час
-MESSAGE_LIMIT_WINDOW_SECONDS = 3600 # 1 час в секундах
+# --- Лимиты по стоимости токенов (глобально на пользователя) ---
+INPUT_TOKENS_PRICE_PER_MILLION_USD = 0.50
+OUTPUT_TOKENS_PRICE_PER_MILLION_USD = 3.00
+HOURLY_COST_LIMIT_USD = 0.05
+DAILY_COST_LIMIT_USD = 0.20
+HOURLY_COST_WINDOW_SECONDS = 3600
+DAILY_COST_WINDOW_SECONDS = 86400
 
 # --- (ИЗМЕНЕНО) Обновленный список моделей ---
 # Словарь доступных моделей с псевдонимами
@@ -144,7 +149,7 @@ SYSTEM_PROFILES = {
 }
 
 bot_active = False # Статус бота (включен/выключен)
-user_message_timestamps = {} # Словарь для отслеживания временных меток сообщений {user_id: [timestamp1, ...]}
+user_token_usage_events = {} # {user_id: [{"timestamp": float, "input_tokens": int, "output_tokens": int, "cost_usd": float}]}
 
 # --- Функции для работы с файлами ---
 
@@ -219,6 +224,80 @@ def trim_context(messages, limit):
         return messages[-limit:]
     return messages
 
+def safe_int(value, default=0):
+    """Безопасно приводит значение к int."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+def estimate_tokens_from_text(text):
+    """Грубая оценка токенов как fallback, если провайдер не вернул usage."""
+    if not text:
+        return 0
+    return max(1, len(text) // 4)
+
+def calculate_request_cost_usd(input_tokens, output_tokens):
+    """Считает стоимость запроса в USD по входным и выходным токенам."""
+    input_cost = (input_tokens / 1_000_000) * INPUT_TOKENS_PRICE_PER_MILLION_USD
+    output_cost = (output_tokens / 1_000_000) * OUTPUT_TOKENS_PRICE_PER_MILLION_USD
+    return input_cost + output_cost
+
+def get_user_cost_totals(user_id, current_time=None):
+    """
+    Возвращает сумму затрат пользователя за час и за сутки, а также
+    время (в секундах) до возможной разблокировки по каждому окну.
+    """
+    if current_time is None:
+        current_time = time.time()
+
+    events = user_token_usage_events.get(user_id, [])
+    daily_cutoff = current_time - DAILY_COST_WINDOW_SECONDS
+    valid_events = [event for event in events if event["timestamp"] >= daily_cutoff]
+
+    if valid_events:
+        user_token_usage_events[user_id] = valid_events
+    elif user_id in user_token_usage_events:
+        del user_token_usage_events[user_id]
+
+    hourly_cutoff = current_time - HOURLY_COST_WINDOW_SECONDS
+    hourly_events = [event for event in valid_events if event["timestamp"] >= hourly_cutoff]
+
+    hourly_cost = sum(event["cost_usd"] for event in hourly_events)
+    daily_cost = sum(event["cost_usd"] for event in valid_events)
+
+    wait_seconds_for_hour = None
+    wait_seconds_for_day = None
+
+    if hourly_events:
+        oldest_hourly_timestamp = hourly_events[0]["timestamp"]
+        wait_seconds_for_hour = max(0, (oldest_hourly_timestamp + HOURLY_COST_WINDOW_SECONDS) - current_time)
+
+    if valid_events:
+        oldest_daily_timestamp = valid_events[0]["timestamp"]
+        wait_seconds_for_day = max(0, (oldest_daily_timestamp + DAILY_COST_WINDOW_SECONDS) - current_time)
+
+    return hourly_cost, daily_cost, wait_seconds_for_hour, wait_seconds_for_day
+
+def register_user_token_usage(user_id, input_tokens, output_tokens, event_time=None):
+    """Регистрирует расход токенов и возвращает стоимость запроса в USD."""
+    if event_time is None:
+        event_time = time.time()
+
+    request_cost_usd = calculate_request_cost_usd(input_tokens, output_tokens)
+    events = user_token_usage_events.get(user_id, [])
+    events.append({
+        "timestamp": event_time,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cost_usd": request_cost_usd
+    })
+    user_token_usage_events[user_id] = events
+
+    # Заодно чистим события старше суточного окна.
+    get_user_cost_totals(user_id, event_time)
+    return request_cost_usd
+
 # --- Функция для взаимодействия с API OpenRouter ---
 
 async def get_openrouter_ai_response(history, user_id, user_name, channel_id, model_to_use, system_message):
@@ -261,6 +340,24 @@ async def get_openrouter_ai_response(history, user_id, user_name, channel_id, mo
                 if response.status == 200:
                     result = json.loads(response_body)
                     ai_response = result['choices'][0]['message']['content']
+                    usage = result.get('usage', {}) if isinstance(result, dict) else {}
+                    input_tokens = safe_int(usage.get('prompt_tokens'))
+                    output_tokens = safe_int(usage.get('completion_tokens'))
+
+                    # Fallback на оценку, если usage не пришел.
+                    if input_tokens <= 0:
+                        input_tokens = estimate_tokens_from_text(json.dumps(messages_payload, ensure_ascii=False))
+                    if output_tokens <= 0:
+                        output_tokens = estimate_tokens_from_text(ai_response)
+
+                    request_cost_usd = register_user_token_usage(user_id, input_tokens, output_tokens, response_time)
+                    log_data["token_usage"] = {
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "total_tokens": input_tokens + output_tokens
+                    }
+                    log_data["request_cost_usd"] = request_cost_usd
+
                     history.append({"role": "assistant", "content": ai_response})
                     # (ИЗМЕНЕНО) Возвращаем модель, которая использовалась
                     return ai_response, history, model_to_use
@@ -399,7 +496,38 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
                 if (response.candidates and 
                     response.candidates[0].content and
                     response.candidates[0].content.parts):
-                    return response.candidates[0].content.parts[0].text
+                    response_text = response.candidates[0].content.parts[0].text
+
+                    usage_metadata_raw = getattr(response, "usage_metadata", None)
+                    usage_metadata = {}
+                    if usage_metadata_raw:
+                        if isinstance(usage_metadata_raw, dict):
+                            usage_metadata = dict(usage_metadata_raw)
+                        else:
+                            for field_name in (
+                                "prompt_token_count",
+                                "candidates_token_count",
+                                "total_token_count",
+                                "cached_content_token_count"
+                            ):
+                                field_value = getattr(usage_metadata_raw, field_name, None)
+                                if field_value is not None:
+                                    usage_metadata[field_name] = field_value
+
+                    input_tokens = safe_int(usage_metadata.get("prompt_token_count"))
+                    output_tokens = safe_int(usage_metadata.get("candidates_token_count"))
+                    if output_tokens <= 0:
+                        total_tokens = safe_int(usage_metadata.get("total_token_count"))
+                        if total_tokens > input_tokens:
+                            output_tokens = total_tokens - input_tokens
+
+                    # Fallback на оценку, если usage_metadata не пришел.
+                    if input_tokens <= 0:
+                        input_tokens = estimate_tokens_from_text(json.dumps(local_history, ensure_ascii=False))
+                    if output_tokens <= 0:
+                        output_tokens = estimate_tokens_from_text(response_text)
+
+                    return response_text, input_tokens, output_tokens, usage_metadata
                 else:
                     finish_reason_str = "UNKNOWN"
                     block_reason_str = "UNKNOWN"
@@ -419,11 +547,12 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
                     raise Exception(error_message)
 
             print(f"Попытка использования модели: {current_model}")
-            ai_response = await asyncio.to_thread(sync_google_call, current_model)
+            ai_response, input_tokens, output_tokens, usage_metadata = await asyncio.to_thread(sync_google_call, current_model)
             response_time = time.time()
             
             # Успешный ответ
             history.append({"role": "assistant", "content": ai_response})
+            request_cost_usd = register_user_token_usage(user_id, input_tokens, output_tokens, response_time)
             
             log_data = {
                 "timestamp_utc": datetime.utcnow().isoformat(),
@@ -435,6 +564,13 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
                 "request_payload": {"model": current_model, "contents_len": len(google_history)},
                 "response_status": 200,
                 "response_body": ai_response,
+                "token_usage": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "total_tokens": input_tokens + output_tokens,
+                    "google_usage_metadata": usage_metadata
+                },
+                "request_cost_usd": request_cost_usd,
                 "duration_seconds": response_time - request_time
             }
              # Логируем и выходим из функции при успехе
@@ -714,24 +850,34 @@ async def on_message(message):
     if not bot_active or not should_respond:
         return
 
-    # --- Проверка на лимит сообщений ---
+    # --- Проверка лимитов по стоимости токенов ---
     current_time = time.time()
     user_id = message.author.id
-    user_timestamps = user_message_timestamps.get(user_id, [])
-    valid_timestamps = [t for t in user_timestamps if current_time - t < MESSAGE_LIMIT_WINDOW_SECONDS]
+    hourly_cost, daily_cost, wait_seconds_for_hour, wait_seconds_for_day = get_user_cost_totals(user_id, current_time)
 
-    if len(valid_timestamps) >= MESSAGE_LIMIT_PER_HOUR:
-        oldest_timestamp = valid_timestamps[0]
-        time_to_wait_seconds = (oldest_timestamp + MESSAGE_LIMIT_WINDOW_SECONDS) - current_time
-        time_to_wait_minutes = (time_to_wait_seconds // 60) + 1
-        await message.reply(f"Вы превысили лимит сообщений. Вы сможете продолжить через {int(time_to_wait_minutes)} минут.", silent=True)
-        print(f"Лимит сообщений для пользователя {message.author.display_name} превышен.")
+    hourly_limit_exceeded = hourly_cost >= HOURLY_COST_LIMIT_USD
+    daily_limit_exceeded = daily_cost >= DAILY_COST_LIMIT_USD
+
+    if hourly_limit_exceeded or daily_limit_exceeded:
+        wait_candidates = []
+        if hourly_limit_exceeded and wait_seconds_for_hour is not None:
+            wait_candidates.append(wait_seconds_for_hour)
+        if daily_limit_exceeded and wait_seconds_for_day is not None:
+            wait_candidates.append(wait_seconds_for_day)
+
+        wait_seconds = min(wait_candidates) if wait_candidates else 60
+        wait_minutes = int(wait_seconds // 60) + 1
+
+        await message.reply(
+            f"Достигнут лимит по токенам: за час ${hourly_cost:.4f}/${HOURLY_COST_LIMIT_USD:.2f}, "
+            f"за сутки ${daily_cost:.4f}/${DAILY_COST_LIMIT_USD:.2f}. "
+            f"Попробуйте снова через {wait_minutes} мин.",
+            silent=True
+        )
+        print(f"Лимит по токенам для пользователя {message.author.display_name} превышен.")
         return
         
     async with message.channel.typing():
-        valid_timestamps.append(current_time)
-        user_message_timestamps[user_id] = valid_timestamps
-        
         channel_id = message.channel.id
         context_limit = channel_context_limits.get(channel_id, DEFAULT_CONTEXT_MESSAGE_LIMIT)
         context_history = read_context(channel_id)
