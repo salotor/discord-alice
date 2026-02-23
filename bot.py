@@ -52,6 +52,8 @@ AVAILABLE_MODELS = {
     "deepseek": "deepseek/deepseek-chat-v3-0324",
     "gpt5": "openai/gpt-5-mini",
     "gpt4o": "openai/gpt-4o-mini",
+    "gemini_or_3": "google/gemini-3-flash-preview",
+    "gemini_or_lite": "google/gemini-2.5-flash-lite",
 
     # --- Модели Google API ---
     "gemini": "gemini-3-flash-preview" # Единая модель с фолбэком
@@ -75,6 +77,8 @@ GOOGLE_API_MODELS = {
 
 # Отображаемые имена моделей (короткие)
 MODEL_DISPLAY_NAMES = {
+    "google/gemini-3-flash-preview": "gemini 3.0 flash (OR)",
+    "google/gemini-2.5-flash-lite": "gemini 2.5 flash lite (OR)",
     "gemini-3-flash-preview": "gemini 3.0 flash",
     "gemini-flash-latest": "gemini 2.5 flash",
     "gemini-flash-lite-latest": "gemini 2.5 flash lite",
