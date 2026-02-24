@@ -43,6 +43,7 @@ HOURLY_COST_LIMIT_USD = 0.05
 DAILY_COST_LIMIT_USD = 0.20
 HOURLY_COST_WINDOW_SECONDS = 3600
 DAILY_COST_WINDOW_SECONDS = 86400
+GEMINI_MODEL_TIMEOUT_SECONDS = 60
 
 # --- (ИЗМЕНЕНО) Обновленный список моделей ---
 # Словарь доступных моделей с псевдонимами
@@ -505,7 +506,8 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
                 
                 response = model.generate_content(
                     contents=local_history,
-                    safety_settings=safety_settings
+                    safety_settings=safety_settings,
+                    request_options={"timeout": GEMINI_MODEL_TIMEOUT_SECONDS}
                 )
                 
                 if (response.candidates and 
@@ -562,7 +564,10 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
                     raise Exception(error_message)
 
             print(f"Попытка использования модели: {current_model}")
-            ai_response, input_tokens, output_tokens, usage_metadata = await asyncio.to_thread(sync_google_call, current_model)
+            ai_response, input_tokens, output_tokens, usage_metadata = await asyncio.wait_for(
+                asyncio.to_thread(sync_google_call, current_model),
+                timeout=GEMINI_MODEL_TIMEOUT_SECONDS
+            )
             response_time = time.time()
             
             # Успешный ответ
@@ -594,6 +599,16 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
             log_api_call(log_data)
             # (ИЗМЕНЕНО) Возвращаем успешную модель
             return ai_response, history, current_model
+
+        except asyncio.TimeoutError:
+            last_exception = TimeoutError(
+                f"Model {current_model} timed out after {GEMINI_MODEL_TIMEOUT_SECONDS}s"
+            )
+            print(
+                f"TIMEOUT: model {current_model} exceeded {GEMINI_MODEL_TIMEOUT_SECONDS}s, switching."
+            )
+            if current_model != models_to_try[-1]:
+                continue
 
         except Exception as e:
             last_exception = e
