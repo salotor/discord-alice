@@ -266,11 +266,17 @@ def get_user_cost_totals(user_id, current_time=None):
     elif user_id in user_token_usage_events:
         del user_token_usage_events[user_id]
 
+    # Limits are enforced only for OpenRouter usage.
+    limit_events = [
+        event for event in valid_events
+        if event.get("provider", "openrouter") == "openrouter"
+    ]
+
     hourly_cutoff = current_time - HOURLY_COST_WINDOW_SECONDS
-    hourly_events = [event for event in valid_events if event["timestamp"] >= hourly_cutoff]
+    hourly_events = [event for event in limit_events if event["timestamp"] >= hourly_cutoff]
 
     hourly_cost = sum(event["cost_usd"] for event in hourly_events)
-    daily_cost = sum(event["cost_usd"] for event in valid_events)
+    daily_cost = sum(event["cost_usd"] for event in limit_events)
 
     wait_seconds_for_hour = None
     wait_seconds_for_day = None
@@ -279,13 +285,13 @@ def get_user_cost_totals(user_id, current_time=None):
         oldest_hourly_timestamp = hourly_events[0]["timestamp"]
         wait_seconds_for_hour = max(0, (oldest_hourly_timestamp + HOURLY_COST_WINDOW_SECONDS) - current_time)
 
-    if valid_events:
-        oldest_daily_timestamp = valid_events[0]["timestamp"]
+    if limit_events:
+        oldest_daily_timestamp = limit_events[0]["timestamp"]
         wait_seconds_for_day = max(0, (oldest_daily_timestamp + DAILY_COST_WINDOW_SECONDS) - current_time)
 
     return hourly_cost, daily_cost, wait_seconds_for_hour, wait_seconds_for_day
 
-def register_user_token_usage(user_id, input_tokens, output_tokens, event_time=None):
+def register_user_token_usage(user_id, input_tokens, output_tokens, event_time=None, provider="openrouter"):
     """Регистрирует расход токенов и возвращает стоимость запроса в USD."""
     if event_time is None:
         event_time = time.time()
@@ -296,7 +302,8 @@ def register_user_token_usage(user_id, input_tokens, output_tokens, event_time=N
         "timestamp": event_time,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
-        "cost_usd": request_cost_usd
+        "cost_usd": request_cost_usd,
+        "provider": provider
     })
     user_token_usage_events[user_id] = events
 
@@ -356,7 +363,9 @@ async def get_openrouter_ai_response(history, user_id, user_name, channel_id, mo
                     if output_tokens <= 0:
                         output_tokens = estimate_tokens_from_text(ai_response)
 
-                    request_cost_usd = register_user_token_usage(user_id, input_tokens, output_tokens, response_time)
+                    request_cost_usd = register_user_token_usage(
+                        user_id, input_tokens, output_tokens, response_time, provider="openrouter"
+                    )
                     log_data["token_usage"] = {
                         "input_tokens": input_tokens,
                         "output_tokens": output_tokens,
@@ -558,7 +567,9 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
             
             # Успешный ответ
             history.append({"role": "assistant", "content": ai_response})
-            request_cost_usd = register_user_token_usage(user_id, input_tokens, output_tokens, response_time)
+            request_cost_usd = register_user_token_usage(
+                user_id, input_tokens, output_tokens, response_time, provider="google"
+            )
             
             log_data = {
                 "timestamp_utc": datetime.utcnow().isoformat(),
@@ -861,12 +872,14 @@ async def on_message(message):
     # --- Проверка лимитов по стоимости токенов ---
     current_time = time.time()
     user_id = message.author.id
+    channel_id = message.channel.id
+    model_for_channel = channel_models.get(channel_id, default_model)
     hourly_cost, daily_cost, wait_seconds_for_hour, wait_seconds_for_day = get_user_cost_totals(user_id, current_time)
 
     hourly_limit_exceeded = hourly_cost >= HOURLY_COST_LIMIT_USD
     daily_limit_exceeded = daily_cost >= DAILY_COST_LIMIT_USD
 
-    if hourly_limit_exceeded or daily_limit_exceeded:
+    if model_for_channel not in GOOGLE_API_MODELS and (hourly_limit_exceeded or daily_limit_exceeded):
         wait_candidates = []
         if hourly_limit_exceeded and wait_seconds_for_hour is not None:
             wait_candidates.append(wait_seconds_for_hour)
