@@ -152,7 +152,7 @@ SYSTEM_PROFILES = {
     "split": "{}" # <--- Пустой JSON, т.к. "Сплит" обрабатывается программно
 }
 
-bot_active = False # Статус бота (включен/выключен)
+bot_active = True # Статус бота (включен/выключен)
 user_token_usage_events = {} # {user_id: [{"timestamp": float, "input_tokens": int, "output_tokens": int, "cost_usd": float}]}
 
 # --- Функции для работы с файлами ---
@@ -189,18 +189,20 @@ def read_settings():
             show_infos = {int(k): v for k, v in data.get('channel_show_infos', {}).items()}
             # (НОВОЕ) Читаем настройки режима "всегда отвечать"
             always_reply = {int(k): v for k, v in data.get('channel_always_reply', {}).items()}
-            return models, limits, show_infos, profiles, always_reply
+            saved_bot_active = bool(data.get('bot_active', True))
+            return models, limits, show_infos, profiles, always_reply, saved_bot_active
     except (FileNotFoundError, json.JSONDecodeError):
-        return {}, {}, {}, {}, {}
+        return {}, {}, {}, {}, {}, True
 
-def write_settings(models, limits, show_infos, profiles, always_reply):
+def write_settings(models, limits, show_infos, profiles, always_reply, saved_bot_active):
     """Записывает настройки каналов в файл."""
     data = {
         'channel_models': models,
         'channel_context_limits': limits,
         'channel_show_infos': show_infos, # (ИЗМЕНЕНО) Сохраняем словарь
         'channel_profiles': profiles,
-        'channel_always_reply': always_reply # (НОВОЕ) Сохраняем настройки
+        'channel_always_reply': always_reply, # (НОВОЕ) Сохраняем настройки
+        'bot_active': saved_bot_active
     }
     with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
@@ -214,7 +216,7 @@ def log_api_call(log_data):
         print(f"Ошибка при записи в лог-файл: {e}")
 
 # --- Загрузка настроек при старте ---
-channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply = read_settings()
+channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply, bot_active = read_settings()
 
 # --- Настройка клиента Discord ---
 intents = discord.Intents.default()
@@ -687,11 +689,13 @@ async def on_message(message):
     if message.author.id == OWNER_ID:
         if message.content == '!activate_bot':
             bot_active = True
+            write_settings(channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply, bot_active)
             await message.channel.send("Бот активирован.")
             return
         
         if message.content == '!deactivate_bot':
             bot_active = False
+            write_settings(channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply, bot_active)
             await message.channel.send("Бот деактивирован.")
             return
 
@@ -707,7 +711,7 @@ async def on_message(message):
             new_setting = not current_setting
             channel_show_infos[channel_id] = new_setting
             
-            write_settings(channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply)
+            write_settings(channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply, bot_active)
             
             status = "включено" if new_setting else "выключено"
             await message.channel.send(f"Отображение информации (профиль и модель) для этого канала **{status}**.")
@@ -720,7 +724,7 @@ async def on_message(message):
             new_setting = not current_setting
             channel_always_reply[channel_id] = new_setting
             
-            write_settings(channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply)
+            write_settings(channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply, bot_active)
             
             status = "ВКЛЮЧЕН" if new_setting else "ВЫКЛЮЧЕН"
             await message.channel.send(f"⚠️ Режим «Вечный ответ» (Always Reply) для этого канала **{status}**. Бот будет отвечать на каждое сообщение.")
@@ -735,7 +739,7 @@ async def on_message(message):
                     channel_id = message.channel.id
                     channel_models[channel_id] = AVAILABLE_MODELS[model_alias]
                     write_context(channel_id, []) # Сброс контекста при смене модели
-                    write_settings(channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply)
+                    write_settings(channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply, bot_active)
                     await message.channel.send(f"Модель для этого канала изменена на: `{channel_models[channel_id]}`. Контекст сброшен.")
                 else:
                     await message.channel.send(f"Неизвестный псевдоним модели: `{model_alias}`. Используйте `!list_models_bot`.")
@@ -751,7 +755,7 @@ async def on_message(message):
                     if limit > 0:
                         channel_id = message.channel.id
                         channel_context_limits[channel_id] = limit
-                        write_settings(channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply)
+                        write_settings(channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply, bot_active)
                         await message.channel.send(f"Размер контекста для этого канала установлен на {limit} сообщений.")
                     else:
                         await message.channel.send("Размер контекста должен быть положительным числом.")
@@ -785,7 +789,7 @@ async def on_message(message):
                     channel_id = message.channel.id
                     channel_profiles[channel_id] = profile_name
                     write_context(channel_id, []) # Сброс контекста при смене профиля
-                    write_settings(channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply)
+                    write_settings(channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply, bot_active)
                     await message.channel.send(f"Профиль для этого канала изменен на: `{profile_name}`. Контекст сброшен.")
                 else:
                     await message.channel.send(f"Неизвестное имя профиля: `{profile_name}`. Используйте `!list_profiles_bot`.")
