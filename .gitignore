@@ -1,3 +1,4 @@
 .env
 api_logs.jsonl
 *.bat
+/__pycache__
