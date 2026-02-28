@@ -44,6 +44,7 @@ DAILY_COST_LIMIT_USD = 0.20
 HOURLY_COST_WINDOW_SECONDS = 3600
 DAILY_COST_WINDOW_SECONDS = 86400
 GEMINI_MODEL_TIMEOUT_SECONDS = 60
+OPENROUTER_EMPTY_RESPONSE_RETRY_ATTEMPTS = 1
 
 # --- (ИЗМЕНЕНО) Обновленный список моделей ---
 # Словарь доступных моделей с псевдонимами
@@ -85,6 +86,12 @@ MODEL_DISPLAY_NAMES = {
     "gemini-flash-lite-latest": "gemini 2.5 flash lite",
     "gemma-3-27b-it": "gemma 3", # Короткое имя для Gemma
 }
+
+NON_CONTENT_RESPONSE_PATTERN = re.compile(r"^[\s\*_`~|>#\-\+\.,!?:;\"'()\[\]{}\\/]+$")
+
+
+class EmptyModelResponseError(Exception):
+    """Raised when model output has no meaningful content."""
 
 # Модель по умолчанию
 default_model = AVAILABLE_MODELS["gemini"] # Изменено на новую модель Google
@@ -244,6 +251,24 @@ def estimate_tokens_from_text(text):
         return 0
     return max(1, len(text) // 4)
 
+def normalize_ai_response_text(text):
+    """Нормализует текст ответа модели для проверок."""
+    if text is None:
+        return ""
+    if not isinstance(text, str):
+        text = str(text)
+    text = re.sub(r"[\u200b-\u200f\uFEFF]", "", text)
+    return text.strip()
+
+def is_meaningful_ai_response(text):
+    """Проверяет, что ответ содержит смысловой текст, а не только markdown/знаки."""
+    normalized = normalize_ai_response_text(text)
+    if not normalized:
+        return False
+    if NON_CONTENT_RESPONSE_PATTERN.fullmatch(normalized):
+        return False
+    return True
+
 def calculate_request_cost_usd(input_tokens, output_tokens):
     """Считает стоимость запроса в USD по входным и выходным токенам."""
     input_cost = (input_tokens / 1_000_000) * INPUT_TOKENS_PRICE_PER_MILLION_USD
@@ -317,10 +342,10 @@ def register_user_token_usage(user_id, input_tokens, output_tokens, event_time=N
 async def get_openrouter_ai_response(history, user_id, user_name, channel_id, model_to_use, system_message):
     """(РЕФАКТОРИНГ) Отправляет запрос к API OpenRouter и возвращает ответ."""
     api_url = "https://openrouter.ai/api/v1/chat/completions"
-    
+
     # Промпт теперь передается как аргумент
     messages_payload = [system_message] + history
-    
+
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
@@ -328,74 +353,96 @@ async def get_openrouter_ai_response(history, user_id, user_name, channel_id, mo
         "X-Title": "Alisa Discord Bot"
     }
     payload = {"model": model_to_use, "messages": messages_payload}
-    
+
     request_time = time.time()
     log_data = {}
-    
+    max_attempts = OPENROUTER_EMPTY_RESPONSE_RETRY_ATTEMPTS + 1
+
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(api_url, headers=headers, json=payload) as response:
-                response_time = time.time()
-                response_body = await response.text()
-                
-                log_data = {
-                    "timestamp_utc": datetime.utcnow().isoformat(),
-                    "user_id": user_id,
-                    "user_name": user_name,
-                    "channel_id": channel_id,
-                    "provider": "openrouter", # Добавлено для ясности
-                    "model_used": model_to_use,
-                    "request_payload": payload, # В логах теперь будет виден используемый system_message
-                    "response_status": response.status,
-                    "response_body": json.loads(response_body) if response.headers.get('Content-Type') == 'application/json' else response_body,
-                    "duration_seconds": response_time - request_time
-                }
+            for attempt_index in range(max_attempts):
+                async with session.post(api_url, headers=headers, json=payload) as response:
+                    response_time = time.time()
+                    response_body = await response.text()
+                    response_content_type = response.headers.get('Content-Type', '')
 
-                if response.status == 200:
-                    result = json.loads(response_body)
-                    ai_response = result['choices'][0]['message']['content']
-                    usage = result.get('usage', {}) if isinstance(result, dict) else {}
-                    input_tokens = safe_int(usage.get('prompt_tokens'))
-                    output_tokens = safe_int(usage.get('completion_tokens'))
+                    parsed_response_body = response_body
+                    if 'application/json' in response_content_type:
+                        try:
+                            parsed_response_body = json.loads(response_body)
+                        except json.JSONDecodeError:
+                            parsed_response_body = response_body
 
-                    # Fallback на оценку, если usage не пришел.
-                    if input_tokens <= 0:
-                        input_tokens = estimate_tokens_from_text(json.dumps(messages_payload, ensure_ascii=False))
-                    if output_tokens <= 0:
-                        output_tokens = estimate_tokens_from_text(ai_response)
-
-                    request_cost_usd = register_user_token_usage(
-                        user_id, input_tokens, output_tokens, response_time, provider="openrouter"
-                    )
-                    log_data["token_usage"] = {
-                        "input_tokens": input_tokens,
-                        "output_tokens": output_tokens,
-                        "total_tokens": input_tokens + output_tokens
+                    log_data = {
+                        "timestamp_utc": datetime.utcnow().isoformat(),
+                        "user_id": user_id,
+                        "user_name": user_name,
+                        "channel_id": channel_id,
+                        "provider": "openrouter",
+                        "model_used": model_to_use,
+                        "request_payload": payload,
+                        "retry_attempt": attempt_index + 1,
+                        "response_status": response.status,
+                        "response_body": parsed_response_body,
+                        "duration_seconds": response_time - request_time
                     }
-                    log_data["request_cost_usd"] = request_cost_usd
 
-                    history.append({"role": "assistant", "content": ai_response})
-                    # (ИЗМЕНЕНО) Возвращаем модель, которая использовалась
-                    return ai_response, history, model_to_use
-                else:
+                    if response.status == 200:
+                        result = parsed_response_body if isinstance(parsed_response_body, dict) else json.loads(response_body)
+                        choices = result.get("choices", []) if isinstance(result, dict) else []
+                        first_choice = choices[0] if choices else {}
+                        message_payload = first_choice.get("message", {}) if isinstance(first_choice, dict) else {}
+                        ai_response = message_payload.get("content", "") if isinstance(message_payload, dict) else ""
+                        normalized_response = normalize_ai_response_text(ai_response)
+
+                        if not is_meaningful_ai_response(normalized_response):
+                            log_data["invalid_ai_response"] = normalized_response
+                            print(
+                                f"OpenRouter вернул пустой/мусорный ответ "
+                                f"(попытка {attempt_index + 1}/{max_attempts}) для модели {model_to_use}."
+                            )
+                            if attempt_index < max_attempts - 1:
+                                continue
+                            history.pop()
+                            return "Не удалось получить содержательный ответ от модели. Попробуйте позже.", history, model_to_use
+
+                        usage = result.get('usage', {}) if isinstance(result, dict) else {}
+                        input_tokens = safe_int(usage.get('prompt_tokens'))
+                        output_tokens = safe_int(usage.get('completion_tokens'))
+
+                        # Fallback на оценку, если usage не пришел.
+                        if input_tokens <= 0:
+                            input_tokens = estimate_tokens_from_text(json.dumps(messages_payload, ensure_ascii=False))
+                        if output_tokens <= 0:
+                            output_tokens = estimate_tokens_from_text(normalized_response)
+
+                        request_cost_usd = register_user_token_usage(
+                            user_id, input_tokens, output_tokens, response_time, provider="openrouter"
+                        )
+                        log_data["token_usage"] = {
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
+                            "total_tokens": input_tokens + output_tokens
+                        }
+                        log_data["request_cost_usd"] = request_cost_usd
+
+                        history.append({"role": "assistant", "content": normalized_response})
+                        return normalized_response, history, model_to_use
+
                     print(f"Ошибка API: {response.status} - {response_body}")
                     history.pop()
-                    # --- (ИЗМЕНЕНО) Обработка ошибки 429 для OpenRouter ---
                     if response.status == 429:
-                        # Пытаемся извлечь 'retry-after' заголовок
                         retry_after = response.headers.get('Retry-After')
                         if retry_after:
                             try:
                                 wait_time = int(retry_after)
                                 if wait_time < 60:
                                     return f"Превышена квота (ошибка 429). Пожалуйста, попробуйте снова через {wait_time} секунд.", history, model_to_use
-                                else:
-                                    wait_minutes = (wait_time // 60) + 1
-                                    return f"Превышена квота (ошибка 429). Пожалуйста, попробуйте снова через {wait_minutes} минут.", history, model_to_use
+                                wait_minutes = (wait_time // 60) + 1
+                                return f"Превышена квота (ошибка 429). Пожалуйста, попробуйте снова через {wait_minutes} минут.", history, model_to_use
                             except ValueError:
-                                pass # Не удалось распарсить, вернем общее сообщение
+                                pass
                         return "Превышена квота (ошибка 429). Пожалуйста, попробуйте позже.", history, model_to_use
-                    # --- ---
                     return "Произошла ошибка API, не могу ответить. Попробуйте позже.", history, model_to_use
     except Exception as e:
         print(f"Произошла ошибка при запросе к API: {e}")
@@ -405,8 +452,6 @@ async def get_openrouter_ai_response(history, user_id, user_name, channel_id, mo
     finally:
         if log_data:
             log_api_call(log_data)
-
-# --- НОВАЯ Функция для взаимодействия с API Google (ИСПРАВЛЕНО И ОБНОВЛЕНО) ---
 
 async def get_google_ai_response(history, user_id, user_name, channel_id, model_to_use, system_message):
     """Отправляет запрос к API Google (genai) и возвращает ответ с поддержкой фолбэка."""
@@ -568,10 +613,21 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
                 asyncio.to_thread(sync_google_call, current_model),
                 timeout=GEMINI_MODEL_TIMEOUT_SECONDS
             )
+            normalized_response = normalize_ai_response_text(ai_response)
+
+            if not is_meaningful_ai_response(normalized_response):
+                last_exception = EmptyModelResponseError(
+                    f"Model {current_model} returned non-meaningful content."
+                )
+                print(
+                    f"EMPTY CONTENT: model {current_model} returned empty/non-meaningful output, switching."
+                )
+                continue
+
             response_time = time.time()
             
             # Успешный ответ
-            history.append({"role": "assistant", "content": ai_response})
+            history.append({"role": "assistant", "content": normalized_response})
             request_cost_usd = register_user_token_usage(
                 user_id, input_tokens, output_tokens, response_time, provider="google"
             )
@@ -585,7 +641,7 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
                 "model_used": current_model,
                 "request_payload": {"model": current_model, "contents_len": len(google_history)},
                 "response_status": 200,
-                "response_body": ai_response,
+                "response_body": normalized_response,
                 "token_usage": {
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
@@ -598,7 +654,7 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
              # Логируем и выходим из функции при успехе
             log_api_call(log_data)
             # (ИЗМЕНЕНО) Возвращаем успешную модель
-            return ai_response, history, current_model
+            return normalized_response, history, current_model
 
         except asyncio.TimeoutError:
             last_exception = TimeoutError(
@@ -636,7 +692,10 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
     status_code = 500
 
     # Обработка последней ошибки для пользователя
-    if last_exception and isinstance(last_exception, google_exceptions.ResourceExhausted):
+    if isinstance(last_exception, EmptyModelResponseError):
+        status_code = 502
+        error_message = "Модель вернула пустой ответ. Попробуйте позже."
+    elif last_exception and isinstance(last_exception, google_exceptions.ResourceExhausted):
         status_code = 429
         # Парсинг времени ожидания из последней ошибки
         retry_seconds = None
