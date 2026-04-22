@@ -6,6 +6,7 @@ import time
 import asyncio # Добавлено для асинхронного запуска
 import re # <--- ДОБАВЛЕНО для парсинга времени ожидания
 import random # <--- ДОБАВЛЕНО для режима Сплит
+import threading
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -36,10 +37,12 @@ except (TypeError, ValueError):
     OWNER_ID = None
 
 # --- Константы и глобальные переменные ---
-CONTEXT_FILE = 'context.json'
-SETTINGS_FILE = 'settings.json'
-LOGS_FILE = 'api_logs.jsonl' # Файл для логов
-TOKEN_USAGE_FILE = 'token_usage.json'
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TEMP_DIR = os.path.join(BASE_DIR, 'temp')
+CONTEXT_FILE = os.path.join(BASE_DIR, 'context.json')
+SETTINGS_FILE = os.path.join(BASE_DIR, 'settings.json')
+LOGS_FILE = os.path.join(BASE_DIR, 'api_logs.jsonl') # Файл для логов
+TOKEN_USAGE_FILE = os.path.join(BASE_DIR, 'token_usage.json')
 DEFAULT_CONTEXT_MESSAGE_LIMIT = 10 # Максимальное количество сообщений в контексте по умолчанию
 # --- Лимиты по стоимости токенов (глобально на пользователя) ---
 INPUT_TOKENS_PRICE_PER_MILLION_USD = 0.50
@@ -103,6 +106,17 @@ NON_CONTENT_RESPONSE_PATTERN = re.compile(r"^[\s\*_`~|>#\-\+\.,!?:;\"'()\[\]{}\\
 
 class EmptyModelResponseError(Exception):
     """Raised when model output has no meaningful content."""
+
+
+class PartialDiscordSendError(Exception):
+    """Raised when only a part of the response was delivered to Discord."""
+
+    def __init__(self, original_exception, sent_response_chunks, response_fully_sent=False):
+        super().__init__(str(original_exception))
+        self.original_exception = original_exception
+        self.sent_response_chunks = list(sent_response_chunks)
+        self.response_fully_sent = response_fully_sent
+
 
 # Модель по умолчанию
 default_model = AVAILABLE_MODELS["gemini"] # Изменено на новую модель Google
@@ -176,42 +190,79 @@ user_token_usage_events = {} # {user_id: [{"timestamp": float, "input_tokens": i
 
 # --- Функции для работы с файлами ---
 
+file_operation_locks = {
+    CONTEXT_FILE: threading.RLock(),
+    SETTINGS_FILE: threading.RLock(),
+    LOGS_FILE: threading.RLock(),
+    TOKEN_USAGE_FILE: threading.RLock(),
+}
+
+
+def get_file_operation_lock(file_path):
+    """Возвращает re-entrant lock для операций с конкретным файлом."""
+    return file_operation_locks[file_path]
+
+
+def _read_json_file_unlocked(file_path):
+    with open(file_path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def _write_text_file_atomically(file_path, text):
+    """Атомарно записывает текст через временный файл внутри папки temp."""
+    os.makedirs(TEMP_DIR, exist_ok=True)
+    temp_file_name = f"{os.path.basename(file_path)}.{int(time.time() * 1000)}.{threading.get_ident()}.tmp"
+    temp_file_path = os.path.join(TEMP_DIR, temp_file_name)
+
+    with open(temp_file_path, 'w', encoding='utf-8') as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+
+    os.replace(temp_file_path, file_path)
+
+
+def _write_json_file_unlocked(file_path, data):
+    serialized = json.dumps(data, ensure_ascii=False, indent=4)
+    _write_text_file_atomically(file_path, serialized)
+
+
 def read_context(channel_id):
     """Читает историю сообщений для конкретного канала из файла."""
-    try:
-        with open(CONTEXT_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            return data.get(str(channel_id), [])
-    except (FileNotFoundError, json.JSONDecodeError):
-        return []
+    with get_file_operation_lock(CONTEXT_FILE):
+        try:
+            data = _read_json_file_unlocked(CONTEXT_FILE)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return []
+    return data.get(str(channel_id), [])
 
 def write_context(channel_id, messages):
     """Записывает историю сообщений для канала в файл."""
-    try:
-        with open(CONTEXT_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        data = {}
-    data[str(channel_id)] = messages
-    with open(CONTEXT_FILE, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
+    with get_file_operation_lock(CONTEXT_FILE):
+        try:
+            data = _read_json_file_unlocked(CONTEXT_FILE)
+        except (FileNotFoundError, json.JSONDecodeError):
+            data = {}
+        data[str(channel_id)] = messages
+        _write_json_file_unlocked(CONTEXT_FILE, data)
 
 def read_settings():
     """Читает настройки каналов из файла."""
-    try:
-        with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            models = {int(k): v for k, v in data.get('channel_models', {}).items()}
-            limits = {int(k): v for k, v in data.get('channel_context_limits', {}).items()}
-            profiles = {int(k): v for k, v in data.get('channel_profiles', {}).items()}
-            # (ИЗМЕНЕНО) Теперь читаем настройки отображения как словарь по каналам
-            show_infos = {int(k): v for k, v in data.get('channel_show_infos', {}).items()}
-            # (НОВОЕ) Читаем настройки режима "всегда отвечать"
-            always_reply = {int(k): v for k, v in data.get('channel_always_reply', {}).items()}
-            saved_bot_active = bool(data.get('bot_active', True))
-            return models, limits, show_infos, profiles, always_reply, saved_bot_active
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}, {}, {}, {}, {}, True
+    with get_file_operation_lock(SETTINGS_FILE):
+        try:
+            data = _read_json_file_unlocked(SETTINGS_FILE)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}, {}, {}, {}, {}, True
+
+    models = {int(k): v for k, v in data.get('channel_models', {}).items()}
+    limits = {int(k): v for k, v in data.get('channel_context_limits', {}).items()}
+    profiles = {int(k): v for k, v in data.get('channel_profiles', {}).items()}
+    # (ИЗМЕНЕНО) Теперь читаем настройки отображения как словарь по каналам
+    show_infos = {int(k): v for k, v in data.get('channel_show_infos', {}).items()}
+    # (НОВОЕ) Читаем настройки режима "всегда отвечать"
+    always_reply = {int(k): v for k, v in data.get('channel_always_reply', {}).items()}
+    saved_bot_active = bool(data.get('bot_active', True))
+    return models, limits, show_infos, profiles, always_reply, saved_bot_active
 
 def write_settings(models, limits, show_infos, profiles, always_reply, saved_bot_active):
     """Записывает настройки каналов в файл."""
@@ -223,14 +274,15 @@ def write_settings(models, limits, show_infos, profiles, always_reply, saved_bot
         'channel_always_reply': always_reply, # (НОВОЕ) Сохраняем настройки
         'bot_active': saved_bot_active
     }
-    with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
+    with get_file_operation_lock(SETTINGS_FILE):
+        _write_json_file_unlocked(SETTINGS_FILE, data)
 
 def log_api_call(log_data):
     """Записывает данные об API вызове в файл логов."""
     try:
-        with open(LOGS_FILE, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(log_data, ensure_ascii=False) + '\n')
+        with get_file_operation_lock(LOGS_FILE):
+            with open(LOGS_FILE, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(log_data, ensure_ascii=False) + '\n')
     except Exception as e:
         print(f"Ошибка при записи в лог-файл: {e}")
 
@@ -289,11 +341,11 @@ def calculate_request_cost_usd(input_tokens, output_tokens):
 
 def read_token_usage_events():
     """Читает сохранённые события расхода токенов из файла."""
-    try:
-        with open(TOKEN_USAGE_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+    with get_file_operation_lock(TOKEN_USAGE_FILE):
+        try:
+            data = _read_json_file_unlocked(TOKEN_USAGE_FILE)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
 
     normalized_events = {}
     for raw_user_id, raw_events in data.items():
@@ -344,8 +396,8 @@ def write_token_usage_events(events):
         for user_id, user_events in events.items()
         if user_events
     }
-    with open(TOKEN_USAGE_FILE, 'w', encoding='utf-8') as f:
-        json.dump(serializable_events, f, ensure_ascii=False, indent=4)
+    with get_file_operation_lock(TOKEN_USAGE_FILE):
+        _write_json_file_unlocked(TOKEN_USAGE_FILE, serializable_events)
 
 user_token_usage_events = read_token_usage_events()
 
@@ -357,7 +409,7 @@ def get_channel_operation_lock(channel_id):
         channel_operation_locks[channel_id] = lock
     return lock
 
-def get_referenced_message(message):
+async def get_referenced_message(message):
     """Безопасно получает сообщение, на которое пришёл reply."""
     if not message.reference:
         return None
@@ -369,6 +421,18 @@ def get_referenced_message(message):
     cached_message = message.reference.cached_message
     if isinstance(cached_message, discord.Message):
         return cached_message
+
+    message_id = message.reference.message_id
+    if not message_id or not hasattr(message.channel, "fetch_message"):
+        return None
+
+    try:
+        return await message.channel.fetch_message(message_id)
+    except (discord.NotFound, discord.Forbidden):
+        return None
+    except discord.HTTPException as e:
+        print(f"Не удалось получить referenced message {message_id}: {e}")
+        return None
 
     return None
 
@@ -402,16 +466,41 @@ def split_message_for_discord(text, limit=2000):
 
     return chunks
 
-async def send_discord_response(message, response_text):
-    """Отправляет ответ в Discord, разбивая длинные сообщения на части."""
+def build_sent_response_history_text(sent_response_chunks):
+    """Собирает текст, который реально был доставлен пользователю по кускам."""
+    return "\n\n".join(sent_response_chunks).strip()
+
+
+def replace_last_assistant_message(history, new_content):
+    """Заменяет последний assistant-message в истории на фактически доставленный текст."""
+    if history and history[-1].get("role") == "assistant":
+        history[-1]["content"] = new_content
+
+
+async def send_discord_response(message, response_text, trailing_text=None):
+    """Отправляет ответ в Discord и отдельно добавляет информационный хвост."""
     sent_messages = []
+    sent_response_chunks = []
     response_chunks = split_message_for_discord(response_text)
+
     for index, chunk in enumerate(response_chunks):
-        if index == 0:
-            sent_message = await message.reply(chunk, mention_author=False)
-        else:
-            sent_message = await message.channel.send(chunk)
+        try:
+            if index == 0:
+                sent_message = await message.reply(chunk, mention_author=False)
+            else:
+                sent_message = await message.channel.send(chunk)
+        except discord.HTTPException as e:
+            raise PartialDiscordSendError(e, sent_response_chunks, response_fully_sent=False) from e
+
         sent_messages.append(sent_message)
+        sent_response_chunks.append(chunk)
+
+    if trailing_text:
+        try:
+            sent_messages.append(await message.channel.send(trailing_text))
+        except discord.HTTPException as e:
+            raise PartialDiscordSendError(e, sent_response_chunks, response_fully_sent=True) from e
+
     return sent_messages
 
 def get_user_cost_totals(user_id, current_time=None):
@@ -960,7 +1049,7 @@ async def handle_regular_message(message, channel_lock):
             )
 
             if response_text:
-                final_response = response_text
+                info_suffix = None
                 should_show_info = channel_show_infos.get(channel_id, True)
 
                 if should_show_info:
@@ -971,12 +1060,19 @@ async def handle_regular_message(message, channel_lock):
                         display_profile = PROFILE_DISPLAY_NAMES.get(active_profile_name, active_profile_name.capitalize())
 
                     display_model = MODEL_DISPLAY_NAMES.get(actual_model_used, actual_model_used)
-                    final_response += f"\n\n||{display_profile} ({display_model}, контекст: {context_limit})||"
+                    info_suffix = f"||{display_profile} ({display_model}, контекст: {context_limit})||"
 
                 try:
-                    await send_discord_response(message, final_response)
-                except discord.HTTPException as e:
-                    print(f"Не удалось отправить ответ в Discord: {e}")
+                    await send_discord_response(message, response_text, trailing_text=info_suffix)
+                except PartialDiscordSendError as e:
+                    if e.response_fully_sent:
+                        write_context(channel_id, updated_history)
+                    elif e.sent_response_chunks and updated_history and updated_history[-1].get("role") == "assistant":
+                        delivered_response_text = build_sent_response_history_text(e.sent_response_chunks)
+                        replace_last_assistant_message(updated_history, delivered_response_text)
+                        write_context(channel_id, updated_history)
+
+                    print(f"Не удалось полностью отправить ответ в Discord: {e.original_exception}")
                     return
 
             write_context(channel_id, updated_history)
@@ -1172,7 +1268,7 @@ async def on_message(message):
     is_always_reply_active = channel_always_reply.get(message.channel.id, False)
 
     # 2. Проверяем стандартные триггеры
-    referenced_message = get_referenced_message(message)
+    referenced_message = await get_referenced_message(message)
     is_reply = referenced_message is not None and client.user is not None and referenced_message.author == client.user
     is_mentioned = client.user is not None and client.user.mentioned_in(message)
 
@@ -1184,103 +1280,6 @@ async def on_message(message):
 
     await handle_regular_message(message, channel_lock)
     return
-
-    # --- Проверка лимитов по стоимости токенов ---
-    current_time = time.time()
-    user_id = message.author.id
-    channel_id = message.channel.id
-    model_for_channel = channel_models.get(channel_id, default_model)
-    hourly_cost, daily_cost, wait_seconds_for_hour, wait_seconds_for_day = get_user_cost_totals(user_id, current_time)
-
-    hourly_limit_exceeded = hourly_cost >= HOURLY_COST_LIMIT_USD
-    daily_limit_exceeded = daily_cost >= DAILY_COST_LIMIT_USD
-
-    if model_for_channel not in GOOGLE_API_MODELS and (hourly_limit_exceeded or daily_limit_exceeded):
-        wait_candidates = []
-        if hourly_limit_exceeded and wait_seconds_for_hour is not None:
-            wait_candidates.append(wait_seconds_for_hour)
-        if daily_limit_exceeded and wait_seconds_for_day is not None:
-            wait_candidates.append(wait_seconds_for_day)
-
-        wait_seconds = min(wait_candidates) if wait_candidates else 60
-        wait_minutes = int(wait_seconds // 60) + 1
-
-        await message.reply(
-            f"Достигнут лимит по токенам: за час ${hourly_cost:.4f}/${HOURLY_COST_LIMIT_USD:.2f}, "
-            f"за сутки ${daily_cost:.4f}/${DAILY_COST_LIMIT_USD:.2f}. "
-            f"Попробуйте снова через {wait_minutes} мин.",
-            silent=True
-        )
-        print(f"Лимит по токенам для пользователя {message.author.display_name} превышен.")
-        return
-        
-    async with message.channel.typing():
-        channel_id = message.channel.id
-        context_limit = channel_context_limits.get(channel_id, DEFAULT_CONTEXT_MESSAGE_LIMIT)
-        context_history = read_context(channel_id)
-        context_history = trim_context(context_history, context_limit)
-
-        model_for_channel = channel_models.get(channel_id, default_model)
-        
-        # --- Определение системного промпта на основе профиля канала ---
-        active_profile_name = channel_profiles.get(channel_id, DEFAULT_PROFILE)
-        
-        # <--- НОВАЯ ЛОГИКА ДЛЯ ПРОФИЛЯ 'SPLIT' --->
-        current_request_profile_name = active_profile_name
-        
-        if active_profile_name == "split":
-            # Исключаем 'split' из списка выбора, чтобы не было рекурсии
-            available_choices = [p for p in SYSTEM_PROFILES.keys() if p != "split"]
-            if available_choices:
-                current_request_profile_name = random.choice(available_choices)
-        # <--- КОНЕЦ НОВОЙ ЛОГИКИ --->
-
-        # Получаем JSON-строку промпта (используем фактически выбранный профиль)
-        profile_json_string = SYSTEM_PROFILES.get(current_request_profile_name, SYSTEM_PROFILES[DEFAULT_PROFILE])
-        
-        try:
-            system_message_obj = json.loads(profile_json_string)
-        except json.JSONDecodeError as e:
-            print(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось распарсить JSON профиля '{current_request_profile_name}'. Ошибка: {e}. Используется '{DEFAULT_PROFILE}'.")
-            # Гарантированный фолбэк на рабочий профиль по умолчанию
-            system_message_obj = json.loads(SYSTEM_PROFILES[DEFAULT_PROFILE])
-        # --- ---
-        
-        user_nickname = message.author.display_name
-        # (ИЗМЕНЕНО) Распаковываем 3 значения: ответ, история, РЕАЛЬНО использованная модель
-        response_text, updated_history, actual_model_used = await get_ai_response(
-            context_history, 
-            message.author.id, 
-            user_nickname, 
-            channel_id, 
-            message.content, 
-            model_for_channel,
-            system_message_obj # Передаем выбранный системный промпт
-        )
-        
-        write_context(channel_id, updated_history)
-        
-        if response_text:
-            final_response = response_text
-            # (ИЗМЕНЕНО) Проверяем настройку для текущего канала
-            should_show_info = channel_show_infos.get(channel_id, True) # По умолчанию True
-            
-            if should_show_info:
-                # Получаем красивое имя профиля
-                if active_profile_name == "split":
-                    # Если режим сплит, показываем "Сплит (Реальное имя)"
-                    real_name_display = PROFILE_DISPLAY_NAMES.get(current_request_profile_name, current_request_profile_name.capitalize())
-                    display_profile = f"Сплит -> {real_name_display}"
-                else:
-                    display_profile = PROFILE_DISPLAY_NAMES.get(active_profile_name, active_profile_name.capitalize())
-                
-                # Получаем короткое имя модели для отображения
-                display_model = MODEL_DISPLAY_NAMES.get(actual_model_used, actual_model_used)
-                
-                # Формат: ||Алиса (gemini 3.0 flash, контекст: 20)||
-                final_response += f"\n\n||{display_profile} ({display_model}, контекст: {context_limit})||"
-            
-            await message.reply(final_response, mention_author=False)
 
 # --- Запуск бота ---
 if __name__ == "__main__":
