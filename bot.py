@@ -29,12 +29,17 @@ DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY') # Добавлен ключ Google
 # ID владельца бота для административных команд
-OWNER_ID = int(os.getenv('OWNER_ID'))
+OWNER_ID_RAW = os.getenv('OWNER_ID')
+try:
+    OWNER_ID = int(OWNER_ID_RAW) if OWNER_ID_RAW else None
+except (TypeError, ValueError):
+    OWNER_ID = None
 
 # --- Константы и глобальные переменные ---
 CONTEXT_FILE = 'context.json'
 SETTINGS_FILE = 'settings.json'
 LOGS_FILE = 'api_logs.jsonl' # Файл для логов
+TOKEN_USAGE_FILE = 'token_usage.json'
 DEFAULT_CONTEXT_MESSAGE_LIMIT = 10 # Максимальное количество сообщений в контексте по умолчанию
 # --- Лимиты по стоимости токенов (глобально на пользователя) ---
 INPUT_TOKENS_PRICE_PER_MILLION_USD = 0.50
@@ -237,6 +242,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True # <--- ДОБАВЛЕНО: Разрешение на получение списка серверов
 client = discord.Client(intents=intents)
+channel_operation_locks = {}
 
 def trim_context(messages, limit):
     """Обрезает историю сообщений, чтобы она не превышала лимит."""
@@ -281,6 +287,133 @@ def calculate_request_cost_usd(input_tokens, output_tokens):
     output_cost = (output_tokens / 1_000_000) * OUTPUT_TOKENS_PRICE_PER_MILLION_USD
     return input_cost + output_cost
 
+def read_token_usage_events():
+    """Читает сохранённые события расхода токенов из файла."""
+    try:
+        with open(TOKEN_USAGE_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+    normalized_events = {}
+    for raw_user_id, raw_events in data.items():
+        try:
+            user_id = int(raw_user_id)
+        except (TypeError, ValueError):
+            continue
+
+        if not isinstance(raw_events, list):
+            continue
+
+        valid_events = []
+        for event in raw_events:
+            if not isinstance(event, dict):
+                continue
+
+            try:
+                timestamp = float(event.get("timestamp"))
+            except (TypeError, ValueError):
+                continue
+
+            input_tokens = max(0, safe_int(event.get("input_tokens")))
+            output_tokens = max(0, safe_int(event.get("output_tokens")))
+            provider = event.get("provider") or "openrouter"
+
+            try:
+                cost_usd = float(event.get("cost_usd"))
+            except (TypeError, ValueError):
+                cost_usd = calculate_request_cost_usd(input_tokens, output_tokens)
+
+            valid_events.append({
+                "timestamp": timestamp,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cost_usd": cost_usd,
+                "provider": provider
+            })
+
+        if valid_events:
+            normalized_events[user_id] = valid_events
+
+    return normalized_events
+
+def write_token_usage_events(events):
+    """Сохраняет события расхода токенов в файл."""
+    serializable_events = {
+        str(user_id): user_events
+        for user_id, user_events in events.items()
+        if user_events
+    }
+    with open(TOKEN_USAGE_FILE, 'w', encoding='utf-8') as f:
+        json.dump(serializable_events, f, ensure_ascii=False, indent=4)
+
+user_token_usage_events = read_token_usage_events()
+
+def get_channel_operation_lock(channel_id):
+    """Возвращает lock для последовательной обработки сообщений в одном канале."""
+    lock = channel_operation_locks.get(channel_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        channel_operation_locks[channel_id] = lock
+    return lock
+
+def get_referenced_message(message):
+    """Безопасно получает сообщение, на которое пришёл reply."""
+    if not message.reference:
+        return None
+
+    resolved_message = message.reference.resolved
+    if isinstance(resolved_message, discord.Message):
+        return resolved_message
+
+    cached_message = message.reference.cached_message
+    if isinstance(cached_message, discord.Message):
+        return cached_message
+
+    return None
+
+def split_message_for_discord(text, limit=2000):
+    """Разбивает длинное сообщение на части под лимит Discord."""
+    if len(text) <= limit:
+        return [text]
+
+    chunks = []
+    remaining_text = text
+    while remaining_text:
+        if len(remaining_text) <= limit:
+            chunks.append(remaining_text)
+            break
+
+        split_at = remaining_text.rfind('\n\n', 0, limit + 1)
+        if split_at <= 0:
+            split_at = remaining_text.rfind('\n', 0, limit + 1)
+        if split_at <= 0:
+            split_at = remaining_text.rfind(' ', 0, limit + 1)
+        if split_at <= 0:
+            split_at = limit
+
+        chunk = remaining_text[:split_at].rstrip()
+        if not chunk:
+            chunk = remaining_text[:limit]
+            split_at = len(chunk)
+
+        chunks.append(chunk)
+        remaining_text = remaining_text[split_at:].lstrip()
+
+    return chunks
+
+async def send_discord_response(message, response_text):
+    """Отправляет ответ в Discord, разбивая длинные сообщения на части."""
+    sent_messages = []
+    response_chunks = split_message_for_discord(response_text)
+    for index, chunk in enumerate(response_chunks):
+        if index == 0:
+            sent_message = await message.reply(chunk, mention_author=False)
+        else:
+            sent_message = await message.channel.send(chunk)
+        sent_messages.append(sent_message)
+    return sent_messages
+
 def get_user_cost_totals(user_id, current_time=None):
     """
     Возвращает сумму затрат пользователя за час и за сутки, а также
@@ -293,10 +426,14 @@ def get_user_cost_totals(user_id, current_time=None):
     daily_cutoff = current_time - DAILY_COST_WINDOW_SECONDS
     valid_events = [event for event in events if event["timestamp"] >= daily_cutoff]
 
+    events_changed = False
     if valid_events:
-        user_token_usage_events[user_id] = valid_events
+        if valid_events != events:
+            user_token_usage_events[user_id] = valid_events
+            events_changed = True
     elif user_id in user_token_usage_events:
         del user_token_usage_events[user_id]
+        events_changed = True
 
     # Limits are enforced only for OpenRouter usage.
     limit_events = [
@@ -321,6 +458,9 @@ def get_user_cost_totals(user_id, current_time=None):
         oldest_daily_timestamp = limit_events[0]["timestamp"]
         wait_seconds_for_day = max(0, (oldest_daily_timestamp + DAILY_COST_WINDOW_SECONDS) - current_time)
 
+    if events_changed:
+        write_token_usage_events(user_token_usage_events)
+
     return hourly_cost, daily_cost, wait_seconds_for_hour, wait_seconds_for_day
 
 def register_user_token_usage(user_id, input_tokens, output_tokens, event_time=None, provider="openrouter"):
@@ -341,6 +481,7 @@ def register_user_token_usage(user_id, input_tokens, output_tokens, event_time=N
 
     # Заодно чистим события старше суточного окна.
     get_user_cost_totals(user_id, event_time)
+    write_token_usage_events(user_token_usage_events)
     return request_cost_usd
 
 # --- Функция для взаимодействия с API OpenRouter ---
@@ -754,6 +895,92 @@ async def get_ai_response(history, user_id, user_name, channel_id, user_message,
             history, user_id, user_name, channel_id, model_to_use, system_message
         )
 
+async def handle_regular_message(message, channel_lock):
+    """Обрабатывает обычное сообщение пользователя с сериализацией по каналу."""
+    async with channel_lock:
+        current_time = time.time()
+        user_id = message.author.id
+        channel_id = message.channel.id
+        model_for_channel = channel_models.get(channel_id, default_model)
+        hourly_cost, daily_cost, wait_seconds_for_hour, wait_seconds_for_day = get_user_cost_totals(user_id, current_time)
+
+        hourly_limit_exceeded = hourly_cost >= HOURLY_COST_LIMIT_USD
+        daily_limit_exceeded = daily_cost >= DAILY_COST_LIMIT_USD
+
+        if model_for_channel not in GOOGLE_API_MODELS and (hourly_limit_exceeded or daily_limit_exceeded):
+            wait_candidates = []
+            if hourly_limit_exceeded and wait_seconds_for_hour is not None:
+                wait_candidates.append(wait_seconds_for_hour)
+            if daily_limit_exceeded and wait_seconds_for_day is not None:
+                wait_candidates.append(wait_seconds_for_day)
+
+            wait_seconds = min(wait_candidates) if wait_candidates else 60
+            wait_minutes = int(wait_seconds // 60) + 1
+
+            await message.reply(
+                f"Достигнут лимит по токенам: за час ${hourly_cost:.4f}/{HOURLY_COST_LIMIT_USD:.2f}, "
+                f"за сутки ${daily_cost:.4f}/{DAILY_COST_LIMIT_USD:.2f}. "
+                f"Попробуйте снова через {wait_minutes} мин.",
+                silent=True
+            )
+            print(f"Лимит по токенам для пользователя {message.author.display_name} превышен.")
+            return
+
+        async with message.channel.typing():
+            context_limit = channel_context_limits.get(channel_id, DEFAULT_CONTEXT_MESSAGE_LIMIT)
+            context_history = read_context(channel_id)
+            context_history = trim_context(context_history, context_limit)
+
+            model_for_channel = channel_models.get(channel_id, default_model)
+            active_profile_name = channel_profiles.get(channel_id, DEFAULT_PROFILE)
+            current_request_profile_name = active_profile_name
+
+            if active_profile_name == "split":
+                available_choices = [profile_name for profile_name in SYSTEM_PROFILES.keys() if profile_name != "split"]
+                if available_choices:
+                    current_request_profile_name = random.choice(available_choices)
+
+            profile_json_string = SYSTEM_PROFILES.get(current_request_profile_name, SYSTEM_PROFILES[DEFAULT_PROFILE])
+
+            try:
+                system_message_obj = json.loads(profile_json_string)
+            except json.JSONDecodeError as e:
+                print(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось распарсить JSON профиля '{current_request_profile_name}'. Ошибка: {e}. Используется '{DEFAULT_PROFILE}'.")
+                system_message_obj = json.loads(SYSTEM_PROFILES[DEFAULT_PROFILE])
+
+            user_nickname = message.author.display_name
+            response_text, updated_history, actual_model_used = await get_ai_response(
+                context_history,
+                message.author.id,
+                user_nickname,
+                channel_id,
+                message.content,
+                model_for_channel,
+                system_message_obj
+            )
+
+            if response_text:
+                final_response = response_text
+                should_show_info = channel_show_infos.get(channel_id, True)
+
+                if should_show_info:
+                    if active_profile_name == "split":
+                        real_name_display = PROFILE_DISPLAY_NAMES.get(current_request_profile_name, current_request_profile_name.capitalize())
+                        display_profile = f"Сплит -> {real_name_display}"
+                    else:
+                        display_profile = PROFILE_DISPLAY_NAMES.get(active_profile_name, active_profile_name.capitalize())
+
+                    display_model = MODEL_DISPLAY_NAMES.get(actual_model_used, actual_model_used)
+                    final_response += f"\n\n||{display_profile} ({display_model}, контекст: {context_limit})||"
+
+                try:
+                    await send_discord_response(message, final_response)
+                except discord.HTTPException as e:
+                    print(f"Не удалось отправить ответ в Discord: {e}")
+                    return
+
+            write_context(channel_id, updated_history)
+
 # --- События Discord ---
 
 @client.event
@@ -773,8 +1000,10 @@ async def on_message(message):
     """Событие, которое срабатывает на каждое новое сообщение."""
     global bot_active, channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply
     
-    if message.author == client.user:
+    if message.author == client.user or message.author.bot or message.webhook_id is not None:
         return
+
+    channel_lock = get_channel_operation_lock(message.channel.id)
 
     # --- Обработка команд от владельца ---
     if message.author.id == OWNER_ID:
@@ -791,7 +1020,8 @@ async def on_message(message):
             return
 
         if message.content == '!clear_bot':
-            write_context(message.channel.id, [])
+            async with channel_lock:
+                write_context(message.channel.id, [])
             await message.channel.send("*Контекст диалога в этом канале очищен.*")
             return
 
@@ -828,9 +1058,10 @@ async def on_message(message):
                 model_alias = parts[1]
                 if model_alias in AVAILABLE_MODELS:
                     channel_id = message.channel.id
-                    channel_models[channel_id] = AVAILABLE_MODELS[model_alias]
-                    write_context(channel_id, []) # Сброс контекста при смене модели
-                    write_settings(channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply, bot_active)
+                    async with channel_lock:
+                        channel_models[channel_id] = AVAILABLE_MODELS[model_alias]
+                        write_context(channel_id, []) # Сброс контекста при смене модели
+                        write_settings(channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply, bot_active)
                     await message.channel.send(f"Модель для этого канала изменена на: `{channel_models[channel_id]}`. Контекст сброшен.")
                 else:
                     await message.channel.send(f"Неизвестный псевдоним модели: `{model_alias}`. Используйте `!list_models_bot`.")
@@ -878,9 +1109,10 @@ async def on_message(message):
                 profile_name = parts[1].lower() # Приводим к нижнему регистру для надежности
                 if profile_name in SYSTEM_PROFILES:
                     channel_id = message.channel.id
-                    channel_profiles[channel_id] = profile_name
-                    write_context(channel_id, []) # Сброс контекста при смене профиля
-                    write_settings(channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply, bot_active)
+                    async with channel_lock:
+                        channel_profiles[channel_id] = profile_name
+                        write_context(channel_id, []) # Сброс контекста при смене профиля
+                        write_settings(channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply, bot_active)
                     await message.channel.send(f"Профиль для этого канала изменен на: `{profile_name}`. Контекст сброшен.")
                 else:
                     await message.channel.send(f"Неизвестное имя профиля: `{profile_name}`. Используйте `!list_profiles_bot`.")
@@ -940,14 +1172,18 @@ async def on_message(message):
     is_always_reply_active = channel_always_reply.get(message.channel.id, False)
 
     # 2. Проверяем стандартные триггеры
-    is_reply = message.reference and message.reference.resolved.author == client.user
-    is_mentioned = client.user.mentioned_in(message)
+    referenced_message = get_referenced_message(message)
+    is_reply = referenced_message is not None and client.user is not None and referenced_message.author == client.user
+    is_mentioned = client.user is not None and client.user.mentioned_in(message)
 
     # 3. Итоговое решение: отвечать или нет?
     should_respond = is_reply or is_mentioned or is_always_reply_active
 
     if not bot_active or not should_respond:
         return
+
+    await handle_regular_message(message, channel_lock)
+    return
 
     # --- Проверка лимитов по стоимости токенов ---
     current_time = time.time()
@@ -1048,10 +1284,23 @@ async def on_message(message):
 
 # --- Запуск бота ---
 if __name__ == "__main__":
-    if not all([DISCORD_TOKEN, OPENROUTER_API_KEY, OWNER_ID, GEMINI_API_KEY]):
-        print("Ошибка: Не все переменные окружения (DISCORD_TOKEN, OPENROUTER_API_KEY, OWNER_ID, GEMINI_API_KEY) заданы в .env файле.")
+    missing_env_vars = []
+    if not DISCORD_TOKEN:
+        missing_env_vars.append("DISCORD_TOKEN")
+    if not OPENROUTER_API_KEY:
+        missing_env_vars.append("OPENROUTER_API_KEY")
+    if OWNER_ID is None:
+        missing_env_vars.append("OWNER_ID")
+    if not GEMINI_API_KEY:
+        missing_env_vars.append("GEMINI_API_KEY")
+
+    if missing_env_vars:
+        print(f"Ошибка: Не все переменные окружения заданы корректно: {', '.join(missing_env_vars)}.")
+        if OWNER_ID is None and OWNER_ID_RAW:
+            print(f"Дополнительно: OWNER_ID должен быть целым числом, сейчас: {OWNER_ID_RAW!r}.")
         if not GOOGLE_API_AVAILABLE:
              print("Дополнительно: 'google-generativeai' не установлен. Выполните 'pip install google-generativeai'.")
+        raise SystemExit(1)
     elif not GOOGLE_API_AVAILABLE:
         print("ВНИМАНИЕ: 'google-generativeai' не установлен. Бот запустится, но модели Google API не будут работать.")
         client.run(DISCORD_TOKEN)

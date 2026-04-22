@@ -1,4 +1,5 @@
 .env
 api_logs.jsonl
+token_usage.json
 *.bat
 /__pycache__
