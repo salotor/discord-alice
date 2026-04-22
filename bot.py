@@ -467,7 +467,7 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
     
     if not GOOGLE_API_AVAILABLE:
         history.pop()
-        return "Модуль 'google-genai' не найден. Не могу обработать запрос.", history, model_to_use
+        return "Модуль 'google-generativeai' не найден. Не могу обработать запрос.", history, model_to_use
 
     # Определение цепочки моделей для использования
     if model_to_use in GEMINI_FALLBACK_CHAIN:
@@ -1051,9 +1051,9 @@ if __name__ == "__main__":
     if not all([DISCORD_TOKEN, OPENROUTER_API_KEY, OWNER_ID, GEMINI_API_KEY]):
         print("Ошибка: Не все переменные окружения (DISCORD_TOKEN, OPENROUTER_API_KEY, OWNER_ID, GEMINI_API_KEY) заданы в .env файле.")
         if not GOOGLE_API_AVAILABLE:
-             print("Дополнительно: 'google-genai' не установлен. Выполните 'pip install google-genai'.")
+             print("Дополнительно: 'google-generativeai' не установлен. Выполните 'pip install google-generativeai'.")
     elif not GOOGLE_API_AVAILABLE:
-        print("ВНИМАНИЕ: 'google-genai' не установлен. Бот запустится, но модели Google API не будут работать.")
+        print("ВНИМАНИЕ: 'google-generativeai' не установлен. Бот запустится, но модели Google API не будут работать.")
         client.run(DISCORD_TOKEN)
     else:
         client.run(DISCORD_TOKEN)
