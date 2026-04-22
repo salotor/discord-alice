@@ -64,17 +64,21 @@ AVAILABLE_MODELS = {
 # Цепочка фолбэка для Google моделей
 GEMINI_FALLBACK_CHAIN = [
     "gemini-3-flash-preview",
-    "gemini-flash-latest",
-    "gemini-flash-lite-latest",
-    "gemma-3-27b-it", # <--- ДОБАВЛЕНО: теперь это 4-й вариант при ошибках
+    "gemini-2.5-flash",
+    "gemini-3.1-flash-lite-preview",
+    "gemini-2.5-flash-lite",
+    "gemma-4-31b-it",
+    "gemma-4-26b-a4b-it",
 ]
 
 # Модели, которые будут использовать Google API (по полному имени модели)
 GOOGLE_API_MODELS = {
     "gemini-3-flash-preview",
-    "gemini-flash-latest",
-    "gemini-flash-lite-latest",
-    "gemma-3-27b-it", # Добавлено для поддержки Gemma
+    "gemini-2.5-flash",
+    "gemini-3.1-flash-lite-preview",
+    "gemini-2.5-flash-lite",
+    "gemma-4-31b-it",
+    "gemma-4-26b-a4b-it",
 }
 
 # Отображаемые имена моделей (короткие)
@@ -82,9 +86,11 @@ MODEL_DISPLAY_NAMES = {
     "google/gemini-3-flash-preview": "gemini 3.0 flash (OR)",
     "google/gemini-2.5-flash-lite": "gemini 2.5 flash lite (OR)",
     "gemini-3-flash-preview": "gemini 3.0 flash",
-    "gemini-flash-latest": "gemini 2.5 flash",
-    "gemini-flash-lite-latest": "gemini 2.5 flash lite",
-    "gemma-3-27b-it": "gemma 3", # Короткое имя для Gemma
+    "gemini-2.5-flash": "gemini 2.5 flash",
+    "gemini-3.1-flash-lite-preview": "gemini 3.1 flash lite preview",
+    "gemini-2.5-flash-lite": "gemini 2.5 flash lite",
+    "gemma-4-31b-it": "gemma 4 31b",
+    "gemma-4-26b-a4b-it": "gemma 4 26b a4b",
 }
 
 NON_CONTENT_RESPONSE_PATTERN = re.compile(r"^[\s\*_`~|>#\-\+\.,!?:;\"'()\[\]{}\\/]+$")
@@ -466,7 +472,7 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
     # Определение цепочки моделей для использования
     if model_to_use in GEMINI_FALLBACK_CHAIN:
         # Если модель в цепочке, начинаем с неё и идем до конца списка
-        # Например, если запросили gemini-2.5-flash, то пропустим gemini-3-flash
+        # Например, если запросили gemini-2.5-flash, то пропустим gemini-3-flash-preview
         try:
             start_index = GEMINI_FALLBACK_CHAIN.index(model_to_use)
             models_to_try = GEMINI_FALLBACK_CHAIN[start_index:]
