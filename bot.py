@@ -71,6 +71,15 @@ GEMINI_FALLBACK_CHAIN = [
 
 # Модели, которые будут использовать Google API (по полному имени модели)
 GOOGLE_API_MODELS = {
+    "gemini-3.1-flash-lite-preview",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-flash-lite-preview-09-2025",
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+    "gemma-4-31b-it",
+    "gemma-4-26b-a4b-it",
     "gemini-3-flash-preview",
     "gemini-flash-latest",
     "gemini-flash-lite-latest",
@@ -98,10 +107,25 @@ default_model = AVAILABLE_MODELS["gemini"] # Изменено на новую м
 # --- ---
 
 # --- Определение Профилей ---
+TEST_ROLE_MODELS = [
+    "gemini-3.1-flash-lite-preview",
+    "gemini-3-flash-preview",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-flash-lite-preview-09-2025",
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+    "gemma-4-31b-it",
+    "gemma-4-26b-a4b-it",
+]
+TEST_ROLE_REQUEST_TEXT = "test"
+TEST_ROLE_USED_MODEL_LABEL = "test-role-sequence"
 DEFAULT_PROFILE = "alisa_adv"
 
 # Отображаемые имена профилей для подписи
 PROFILE_DISPLAY_NAMES = {
+    "test": "Test",
     "alisa": "Алиса (old)",
     "alisa_adv": "Алиса",
     "lena": "Лена",
@@ -150,6 +174,7 @@ ULYANA_PROMPT_JSON = """
 
 # Словарь всех доступных профилей
 SYSTEM_PROFILES = {
+    "test": "{\"role\": \"system\", \"content\": \"You are a helpful assistant. Reply directly and briefly to the user's prompt.\"}",
     "alisa": ALISA_PROMPT_JSON,
     "alisa_adv": ALISA_ADV_PROMPT_JSON,
     "lena": LENA_PROMPT_JSON,
@@ -237,6 +262,37 @@ def trim_context(messages, limit):
     if len(messages) > limit:
         return messages[-limit:]
     return messages
+
+def split_text_for_discord(text, limit=2000):
+    """Splits long text into Discord-sized chunks, preferring paragraph boundaries."""
+    normalized_text = normalize_ai_response_text(text)
+    if len(normalized_text) <= limit:
+        return [normalized_text]
+
+    chunks = []
+    current_chunk = ""
+
+    for paragraph in normalized_text.split("\n\n"):
+        candidate = paragraph if not current_chunk else f"{current_chunk}\n\n{paragraph}"
+        if len(candidate) <= limit:
+            current_chunk = candidate
+            continue
+
+        if current_chunk:
+            chunks.append(current_chunk)
+            current_chunk = ""
+
+        while len(paragraph) > limit:
+            chunks.append(paragraph[:limit])
+            paragraph = paragraph[limit:]
+
+        current_chunk = paragraph
+
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    return chunks or [normalized_text[:limit]]
+
 
 def safe_int(value, default=0):
     """Безопасно приводит значение к int."""
@@ -750,6 +806,31 @@ async def get_ai_response(history, user_id, user_name, channel_id, user_message,
 
 # --- События Discord ---
 
+async def get_test_role_response(history, user_id, user_name, channel_id, user_message, context_limit, system_message):
+    """Sequentially queries the fixed model list with the prompt 'test'."""
+    aggregated_parts = []
+
+    for model_name in TEST_ROLE_MODELS:
+        response_text, _, _ = await get_ai_response(
+            [],
+            user_id,
+            user_name,
+            channel_id,
+            TEST_ROLE_REQUEST_TEXT,
+            model_name,
+            system_message
+        )
+        aggregated_parts.append(model_name)
+        aggregated_parts.append(response_text)
+
+    final_response = "\n\n".join(aggregated_parts)
+    updated_history = history + [
+        {"role": "user", "name": user_name, "content": user_message},
+        {"role": "assistant", "content": final_response}
+    ]
+    return final_response, trim_context(updated_history, context_limit), TEST_ROLE_USED_MODEL_LABEL
+
+
 @client.event
 async def on_ready():
     """Событие, которое срабаотыет при успешном подключении бота."""
@@ -947,13 +1028,14 @@ async def on_message(message):
     current_time = time.time()
     user_id = message.author.id
     channel_id = message.channel.id
+    active_profile_name = channel_profiles.get(channel_id, DEFAULT_PROFILE)
     model_for_channel = channel_models.get(channel_id, default_model)
     hourly_cost, daily_cost, wait_seconds_for_hour, wait_seconds_for_day = get_user_cost_totals(user_id, current_time)
 
     hourly_limit_exceeded = hourly_cost >= HOURLY_COST_LIMIT_USD
     daily_limit_exceeded = daily_cost >= DAILY_COST_LIMIT_USD
 
-    if model_for_channel not in GOOGLE_API_MODELS and (hourly_limit_exceeded or daily_limit_exceeded):
+    if active_profile_name != "test" and model_for_channel not in GOOGLE_API_MODELS and (hourly_limit_exceeded or daily_limit_exceeded):
         wait_candidates = []
         if hourly_limit_exceeded and wait_seconds_for_hour is not None:
             wait_candidates.append(wait_seconds_for_hour)
@@ -972,6 +1054,31 @@ async def on_message(message):
         print(f"Лимит по токенам для пользователя {message.author.display_name} превышен.")
         return
         
+    if active_profile_name == "test":
+        async with message.channel.typing():
+            context_limit = channel_context_limits.get(channel_id, DEFAULT_CONTEXT_MESSAGE_LIMIT)
+            context_history = trim_context(read_context(channel_id), context_limit)
+            user_nickname = message.author.display_name
+            system_message_obj = json.loads(SYSTEM_PROFILES["test"])
+
+            response_text, updated_history, _ = await get_test_role_response(
+                context_history,
+                message.author.id,
+                user_nickname,
+                channel_id,
+                message.content,
+                context_limit,
+                system_message_obj
+            )
+
+            write_context(channel_id, updated_history)
+            if response_text:
+                response_chunks = split_text_for_discord(response_text)
+                await message.reply(response_chunks[0], mention_author=False)
+                for chunk in response_chunks[1:]:
+                    await message.channel.send(chunk)
+        return
+
     async with message.channel.typing():
         channel_id = message.channel.id
         context_limit = channel_context_limits.get(channel_id, DEFAULT_CONTEXT_MESSAGE_LIMIT)
