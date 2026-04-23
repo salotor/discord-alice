@@ -52,6 +52,7 @@ DAILY_COST_LIMIT_USD = 0.20
 HOURLY_COST_WINDOW_SECONDS = 3600
 DAILY_COST_WINDOW_SECONDS = 86400
 GEMINI_MODEL_TIMEOUT_SECONDS = 60
+OPENROUTER_MODEL_TIMEOUT_SECONDS = 60
 OPENROUTER_EMPTY_RESPONSE_RETRY_ATTEMPTS = 1
 
 # --- (ИЗМЕНЕНО) Обновленный список моделей ---
@@ -203,6 +204,17 @@ def get_file_operation_lock(file_path):
     return file_operation_locks[file_path]
 
 
+def _clone_history_messages(messages):
+    """Делает поверхностную копию истории, чтобы мутации не текли назад."""
+    cloned_messages = []
+    for message in messages:
+        if isinstance(message, dict):
+            cloned_messages.append(dict(message))
+        else:
+            cloned_messages.append(message)
+    return cloned_messages
+
+
 def _read_json_file_unlocked(file_path):
     with open(file_path, 'r', encoding='utf-8') as f:
         return json.load(f)
@@ -227,7 +239,19 @@ def _write_json_file_unlocked(file_path, data):
     _write_text_file_atomically(file_path, serialized)
 
 
-def read_context(channel_id):
+def _load_context_store():
+    with get_file_operation_lock(CONTEXT_FILE):
+        try:
+            data = _read_json_file_unlocked(CONTEXT_FILE)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+    return data if isinstance(data, dict) else {}
+
+
+context_store = _load_context_store()
+
+
+def _legacy_read_context_unused(channel_id):
     """Читает историю сообщений для конкретного канала из файла."""
     with get_file_operation_lock(CONTEXT_FILE):
         try:
@@ -236,7 +260,7 @@ def read_context(channel_id):
             return []
     return data.get(str(channel_id), [])
 
-def write_context(channel_id, messages):
+def _legacy_write_context_unused(channel_id, messages):
     """Записывает историю сообщений для канала в файл."""
     with get_file_operation_lock(CONTEXT_FILE):
         try:
@@ -277,6 +301,72 @@ def write_settings(models, limits, show_infos, profiles, always_reply, saved_bot
     with get_file_operation_lock(SETTINGS_FILE):
         _write_json_file_unlocked(SETTINGS_FILE, data)
 
+def _legacy_log_api_call_unused(log_data):
+    """Записывает данные об API вызове в файл логов."""
+    try:
+        with get_file_operation_lock(LOGS_FILE):
+            with open(LOGS_FILE, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(log_data, ensure_ascii=False) + '\n')
+    except asyncio.TimeoutError as e:
+        print(f"Превышен timeout OpenRouter ({OPENROUTER_MODEL_TIMEOUT_SECONDS}s): {e}")
+        log_data["error"] = f"Timeout after {OPENROUTER_MODEL_TIMEOUT_SECONDS}s"
+        history.pop()
+        return "Сервис отвечал слишком долго. Попробуйте позже.", history, model_to_use
+    except asyncio.TimeoutError as e:
+        print(f"Превышен timeout OpenRouter ({OPENROUTER_MODEL_TIMEOUT_SECONDS}s): {e}")
+        log_data["error"] = f"Timeout after {OPENROUTER_MODEL_TIMEOUT_SECONDS}s"
+        history.pop()
+        return "Сервис отвечал слишком долго. Попробуйте позже.", history, model_to_use
+    except asyncio.TimeoutError as e:
+        print(f"Превышен timeout OpenRouter ({OPENROUTER_MODEL_TIMEOUT_SECONDS}s): {e}")
+        log_data["error"] = f"Timeout after {OPENROUTER_MODEL_TIMEOUT_SECONDS}s"
+        history.pop()
+        return "Сервис отвечал слишком долго. Попробуйте позже.", history, model_to_use
+    except Exception as e:
+        print(f"Ошибка при записи в лог-файл: {e}")
+
+# --- Загрузка настроек при старте ---
+def _load_context_store():
+    with get_file_operation_lock(CONTEXT_FILE):
+        try:
+            data = _read_json_file_unlocked(CONTEXT_FILE)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+    return data if isinstance(data, dict) else {}
+
+
+context_store = _load_context_store()
+
+
+def read_context(channel_id):
+    """Читает историю сообщений для конкретного канала из памяти."""
+    with get_file_operation_lock(CONTEXT_FILE):
+        return _clone_history_messages(context_store.get(str(channel_id), []))
+
+
+def write_context(channel_id, messages):
+    """Обновляет историю в памяти и синхронно сбрасывает её на диск."""
+    with get_file_operation_lock(CONTEXT_FILE):
+        context_store[str(channel_id)] = _clone_history_messages(messages)
+        _write_json_file_unlocked(CONTEXT_FILE, context_store)
+
+
+async def write_context_async(channel_id, messages):
+    await asyncio.to_thread(write_context, channel_id, messages)
+
+
+async def write_settings_async(models, limits, show_infos, profiles, always_reply, saved_bot_active):
+    await asyncio.to_thread(
+        write_settings,
+        dict(models),
+        dict(limits),
+        dict(show_infos),
+        dict(profiles),
+        dict(always_reply),
+        bool(saved_bot_active)
+    )
+
+
 def log_api_call(log_data):
     """Записывает данные об API вызове в файл логов."""
     try:
@@ -286,7 +376,11 @@ def log_api_call(log_data):
     except Exception as e:
         print(f"Ошибка при записи в лог-файл: {e}")
 
-# --- Загрузка настроек при старте ---
+
+async def log_api_call_async(log_data):
+    await asyncio.to_thread(log_api_call, dict(log_data))
+
+
 channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply, bot_active = read_settings()
 
 # --- Настройка клиента Discord ---
@@ -295,6 +389,18 @@ intents.message_content = True
 intents.guilds = True # <--- ДОБАВЛЕНО: Разрешение на получение списка серверов
 client = discord.Client(intents=intents)
 channel_operation_locks = {}
+SAFE_ALLOWED_MENTIONS = discord.AllowedMentions.none()
+
+
+async def safe_channel_send(channel, content, **kwargs):
+    kwargs.setdefault("allowed_mentions", SAFE_ALLOWED_MENTIONS)
+    return await channel.send(content, **kwargs)
+
+
+async def safe_message_reply(message, content, **kwargs):
+    kwargs.setdefault("allowed_mentions", SAFE_ALLOWED_MENTIONS)
+    kwargs.setdefault("mention_author", False)
+    return await message.reply(content, **kwargs)
 
 def trim_context(messages, limit):
     """Обрезает историю сообщений, чтобы она не превышала лимит."""
@@ -401,6 +507,96 @@ def write_token_usage_events(events):
 
 user_token_usage_events = read_token_usage_events()
 
+
+def _legacy_get_user_cost_totals_unused(user_id, current_time=None):
+    """
+    Возвращает сумму затрат пользователя за час и за сутки, а также
+    время (в секундах) до возможной разблокировки по каждому окну.
+    """
+    if current_time is None:
+        current_time = time.time()
+
+    with get_file_operation_lock(TOKEN_USAGE_FILE):
+        events = user_token_usage_events.get(user_id, [])
+        daily_cutoff = current_time - DAILY_COST_WINDOW_SECONDS
+        valid_events = [event for event in events if event["timestamp"] >= daily_cutoff]
+
+        if valid_events:
+            if valid_events != events:
+                user_token_usage_events[user_id] = valid_events
+        elif user_id in user_token_usage_events:
+            del user_token_usage_events[user_id]
+
+        limit_events = [
+            event for event in valid_events
+            if event.get("provider", "openrouter") == "openrouter"
+        ]
+
+        hourly_cutoff = current_time - HOURLY_COST_WINDOW_SECONDS
+        hourly_events = [event for event in limit_events if event["timestamp"] >= hourly_cutoff]
+
+        hourly_cost = sum(event["cost_usd"] for event in hourly_events)
+        daily_cost = sum(event["cost_usd"] for event in limit_events)
+
+        wait_seconds_for_hour = None
+        wait_seconds_for_day = None
+
+        if hourly_events:
+            oldest_hourly_timestamp = hourly_events[0]["timestamp"]
+            wait_seconds_for_hour = max(0, (oldest_hourly_timestamp + HOURLY_COST_WINDOW_SECONDS) - current_time)
+
+        if limit_events:
+            oldest_daily_timestamp = limit_events[0]["timestamp"]
+            wait_seconds_for_day = max(0, (oldest_daily_timestamp + DAILY_COST_WINDOW_SECONDS) - current_time)
+
+        return hourly_cost, daily_cost, wait_seconds_for_hour, wait_seconds_for_day
+
+
+def _legacy_register_user_token_usage_unused(user_id, input_tokens, output_tokens, event_time=None, provider="openrouter"):
+    """Регистрирует расход токенов и возвращает стоимость запроса в USD."""
+    if event_time is None:
+        event_time = time.time()
+
+    with get_file_operation_lock(TOKEN_USAGE_FILE):
+        request_cost_usd = calculate_request_cost_usd(input_tokens, output_tokens)
+        events = list(user_token_usage_events.get(user_id, []))
+        events.append({
+            "timestamp": event_time,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cost_usd": request_cost_usd,
+            "provider": provider
+        })
+        user_token_usage_events[user_id] = events
+        get_user_cost_totals(user_id, event_time)
+        return request_cost_usd
+
+
+def _legacy_snapshot_token_usage_events_unused():
+    """Делает снимок usage state для фоновой записи на диск."""
+    with get_file_operation_lock(TOKEN_USAGE_FILE):
+        return {
+            str(user_id): [dict(event) for event in user_events]
+            for user_id, user_events in user_token_usage_events.items()
+            if user_events
+        }
+
+
+async def _legacy_persist_token_usage_events_async():
+    await asyncio.to_thread(write_token_usage_events, snapshot_token_usage_events())
+
+
+def _legacy_is_google_timeout_error_unused(error):
+    """Определяет timeout-ошибки SDK/transport для Google API."""
+    if isinstance(error, TimeoutError):
+        return True
+
+    if google_exceptions is None:
+        return False
+
+    deadline_exceeded_error = getattr(google_exceptions, "DeadlineExceeded", None)
+    return bool(deadline_exceeded_error and isinstance(error, deadline_exceeded_error))
+
 def get_channel_operation_lock(channel_id):
     """Возвращает lock для последовательной обработки сообщений в одном канале."""
     lock = channel_operation_locks.get(channel_id)
@@ -486,9 +682,13 @@ async def send_discord_response(message, response_text, trailing_text=None):
     for index, chunk in enumerate(response_chunks):
         try:
             if index == 0:
-                sent_message = await message.reply(chunk, mention_author=False)
+                sent_message = await safe_message_reply(
+                    message,
+                    chunk,
+                    mention_author=False
+                )
             else:
-                sent_message = await message.channel.send(chunk)
+                sent_message = await safe_channel_send(message.channel, chunk)
         except discord.HTTPException as e:
             raise PartialDiscordSendError(e, sent_response_chunks, response_fully_sent=False) from e
 
@@ -497,13 +697,13 @@ async def send_discord_response(message, response_text, trailing_text=None):
 
     if trailing_text:
         try:
-            sent_messages.append(await message.channel.send(trailing_text))
+            sent_messages.append(await safe_channel_send(message.channel, trailing_text))
         except discord.HTTPException as e:
             raise PartialDiscordSendError(e, sent_response_chunks, response_fully_sent=True) from e
 
     return sent_messages
 
-def get_user_cost_totals(user_id, current_time=None):
+def _legacy_get_user_cost_totals_unused_2(user_id, current_time=None):
     """
     Возвращает сумму затрат пользователя за час и за сутки, а также
     время (в секундах) до возможной разблокировки по каждому окну.
@@ -552,7 +752,7 @@ def get_user_cost_totals(user_id, current_time=None):
 
     return hourly_cost, daily_cost, wait_seconds_for_hour, wait_seconds_for_day
 
-def register_user_token_usage(user_id, input_tokens, output_tokens, event_time=None, provider="openrouter"):
+def _legacy_register_user_token_usage_unused_2(user_id, input_tokens, output_tokens, event_time=None, provider="openrouter"):
     """Регистрирует расход токенов и возвращает стоимость запроса в USD."""
     if event_time is None:
         event_time = time.time()
@@ -575,7 +775,97 @@ def register_user_token_usage(user_id, input_tokens, output_tokens, event_time=N
 
 # --- Функция для взаимодействия с API OpenRouter ---
 
-async def get_openrouter_ai_response(history, user_id, user_name, channel_id, model_to_use, system_message):
+def get_user_cost_totals(user_id, current_time=None):
+    """
+    Возвращает сумму затрат пользователя за час и за сутки, а также
+    время (в секундах) до возможной разблокировки по каждому окну.
+    """
+    if current_time is None:
+        current_time = time.time()
+
+    with get_file_operation_lock(TOKEN_USAGE_FILE):
+        events = user_token_usage_events.get(user_id, [])
+        daily_cutoff = current_time - DAILY_COST_WINDOW_SECONDS
+        valid_events = [event for event in events if event["timestamp"] >= daily_cutoff]
+
+        if valid_events:
+            if valid_events != events:
+                user_token_usage_events[user_id] = valid_events
+        elif user_id in user_token_usage_events:
+            del user_token_usage_events[user_id]
+
+        limit_events = [
+            event for event in valid_events
+            if event.get("provider", "openrouter") == "openrouter"
+        ]
+
+        hourly_cutoff = current_time - HOURLY_COST_WINDOW_SECONDS
+        hourly_events = [event for event in limit_events if event["timestamp"] >= hourly_cutoff]
+
+        hourly_cost = sum(event["cost_usd"] for event in hourly_events)
+        daily_cost = sum(event["cost_usd"] for event in limit_events)
+
+        wait_seconds_for_hour = None
+        wait_seconds_for_day = None
+
+        if hourly_events:
+            oldest_hourly_timestamp = hourly_events[0]["timestamp"]
+            wait_seconds_for_hour = max(0, (oldest_hourly_timestamp + HOURLY_COST_WINDOW_SECONDS) - current_time)
+
+        if limit_events:
+            oldest_daily_timestamp = limit_events[0]["timestamp"]
+            wait_seconds_for_day = max(0, (oldest_daily_timestamp + DAILY_COST_WINDOW_SECONDS) - current_time)
+
+        return hourly_cost, daily_cost, wait_seconds_for_hour, wait_seconds_for_day
+
+
+def register_user_token_usage(user_id, input_tokens, output_tokens, event_time=None, provider="openrouter"):
+    """Регистрирует расход токенов и возвращает стоимость запроса в USD."""
+    if event_time is None:
+        event_time = time.time()
+
+    with get_file_operation_lock(TOKEN_USAGE_FILE):
+        request_cost_usd = calculate_request_cost_usd(input_tokens, output_tokens)
+        events = list(user_token_usage_events.get(user_id, []))
+        events.append({
+            "timestamp": event_time,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cost_usd": request_cost_usd,
+            "provider": provider
+        })
+        user_token_usage_events[user_id] = events
+        get_user_cost_totals(user_id, event_time)
+        return request_cost_usd
+
+
+def snapshot_token_usage_events():
+    """Делает снимок usage state для фоновой записи на диск."""
+    with get_file_operation_lock(TOKEN_USAGE_FILE):
+        return {
+            str(user_id): [dict(event) for event in user_events]
+            for user_id, user_events in user_token_usage_events.items()
+            if user_events
+        }
+
+
+async def persist_token_usage_events_async():
+    await asyncio.to_thread(write_token_usage_events, snapshot_token_usage_events())
+
+
+def is_google_timeout_error(error):
+    """Определяет timeout-ошибки SDK/transport для Google API."""
+    if isinstance(error, TimeoutError):
+        return True
+
+    if google_exceptions is None:
+        return False
+
+    deadline_exceeded_error = getattr(google_exceptions, "DeadlineExceeded", None)
+    return bool(deadline_exceeded_error and isinstance(error, deadline_exceeded_error))
+
+
+async def _legacy_get_openrouter_ai_response_unused(history, user_id, user_name, channel_id, model_to_use, system_message):
     """(РЕФАКТОРИНГ) Отправляет запрос к API OpenRouter и возвращает ответ."""
     api_url = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -591,11 +881,20 @@ async def get_openrouter_ai_response(history, user_id, user_name, channel_id, mo
     payload = {"model": model_to_use, "messages": messages_payload}
 
     request_time = time.time()
-    log_data = {}
+    log_data = {
+        "timestamp_utc": datetime.utcnow().isoformat(),
+        "user_id": user_id,
+        "user_name": user_name,
+        "channel_id": channel_id,
+        "provider": "openrouter",
+        "model_used": model_to_use,
+        "request_payload": payload
+    }
     max_attempts = OPENROUTER_EMPTY_RESPONSE_RETRY_ATTEMPTS + 1
 
     try:
-        async with aiohttp.ClientSession() as session:
+        request_timeout = aiohttp.ClientTimeout(total=OPENROUTER_MODEL_TIMEOUT_SECONDS)
+        async with aiohttp.ClientSession(timeout=request_timeout) as session:
             for attempt_index in range(max_attempts):
                 async with session.post(api_url, headers=headers, json=payload) as response:
                     response_time = time.time()
@@ -655,6 +954,7 @@ async def get_openrouter_ai_response(history, user_id, user_name, channel_id, mo
                         request_cost_usd = register_user_token_usage(
                             user_id, input_tokens, output_tokens, response_time, provider="openrouter"
                         )
+                        await persist_token_usage_events_async()
                         log_data["token_usage"] = {
                             "input_tokens": input_tokens,
                             "output_tokens": output_tokens,
@@ -687,7 +987,134 @@ async def get_openrouter_ai_response(history, user_id, user_name, channel_id, mo
         return "Произошла ошибка сети, не могу ответить. Попробуйте позже.", history, model_to_use
     finally:
         if log_data:
-            log_api_call(log_data)
+            await log_api_call_async(log_data)
+
+async def get_openrouter_ai_response(history, user_id, user_name, channel_id, model_to_use, system_message):
+    """(РЕФАКТОРИНГ) Отправляет запрос к API OpenRouter и возвращает ответ."""
+    api_url = "https://openrouter.ai/api/v1/chat/completions"
+    messages_payload = [system_message] + history
+
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "http://localhost:3000",
+        "X-Title": "Alisa Discord Bot"
+    }
+    payload = {"model": model_to_use, "messages": messages_payload}
+
+    request_time = time.time()
+    log_data = {
+        "timestamp_utc": datetime.utcnow().isoformat(),
+        "user_id": user_id,
+        "user_name": user_name,
+        "channel_id": channel_id,
+        "provider": "openrouter",
+        "model_used": model_to_use,
+        "request_payload": payload
+    }
+    max_attempts = OPENROUTER_EMPTY_RESPONSE_RETRY_ATTEMPTS + 1
+
+    try:
+        request_timeout = aiohttp.ClientTimeout(total=OPENROUTER_MODEL_TIMEOUT_SECONDS)
+        async with aiohttp.ClientSession(timeout=request_timeout) as session:
+            for attempt_index in range(max_attempts):
+                async with session.post(api_url, headers=headers, json=payload) as response:
+                    response_time = time.time()
+                    response_body = await response.text()
+                    response_content_type = response.headers.get('Content-Type', '')
+
+                    parsed_response_body = response_body
+                    if 'application/json' in response_content_type:
+                        try:
+                            parsed_response_body = json.loads(response_body)
+                        except json.JSONDecodeError:
+                            parsed_response_body = response_body
+
+                    log_data = {
+                        "timestamp_utc": datetime.utcnow().isoformat(),
+                        "user_id": user_id,
+                        "user_name": user_name,
+                        "channel_id": channel_id,
+                        "provider": "openrouter",
+                        "model_used": model_to_use,
+                        "request_payload": payload,
+                        "retry_attempt": attempt_index + 1,
+                        "response_status": response.status,
+                        "response_body": parsed_response_body,
+                        "duration_seconds": response_time - request_time
+                    }
+
+                    if response.status == 200:
+                        result = parsed_response_body if isinstance(parsed_response_body, dict) else json.loads(response_body)
+                        choices = result.get("choices", []) if isinstance(result, dict) else []
+                        first_choice = choices[0] if choices else {}
+                        message_payload = first_choice.get("message", {}) if isinstance(first_choice, dict) else {}
+                        ai_response = message_payload.get("content", "") if isinstance(message_payload, dict) else ""
+                        normalized_response = normalize_ai_response_text(ai_response)
+
+                        if not is_meaningful_ai_response(normalized_response):
+                            log_data["invalid_ai_response"] = normalized_response
+                            print(
+                                f"OpenRouter вернул пустой/мусорный ответ "
+                                f"(попытка {attempt_index + 1}/{max_attempts}) для модели {model_to_use}."
+                            )
+                            if attempt_index < max_attempts - 1:
+                                continue
+                            history.pop()
+                            return "Не удалось получить содержательный ответ от модели. Попробуйте позже.", history, model_to_use
+
+                        usage = result.get('usage', {}) if isinstance(result, dict) else {}
+                        input_tokens = safe_int(usage.get('prompt_tokens'))
+                        output_tokens = safe_int(usage.get('completion_tokens'))
+
+                        if input_tokens <= 0:
+                            input_tokens = estimate_tokens_from_text(json.dumps(messages_payload, ensure_ascii=False))
+                        if output_tokens <= 0:
+                            output_tokens = estimate_tokens_from_text(normalized_response)
+
+                        request_cost_usd = register_user_token_usage(
+                            user_id, input_tokens, output_tokens, response_time, provider="openrouter"
+                        )
+                        await persist_token_usage_events_async()
+                        log_data["token_usage"] = {
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
+                            "total_tokens": input_tokens + output_tokens
+                        }
+                        log_data["request_cost_usd"] = request_cost_usd
+
+                        history.append({"role": "assistant", "content": normalized_response})
+                        return normalized_response, history, model_to_use
+
+                    print(f"Ошибка API: {response.status} - {response_body}")
+                    history.pop()
+                    if response.status == 429:
+                        retry_after = response.headers.get('Retry-After')
+                        if retry_after:
+                            try:
+                                wait_time = int(retry_after)
+                                if wait_time < 60:
+                                    return f"Превышена квота (ошибка 429). Пожалуйста, попробуйте снова через {wait_time} секунд.", history, model_to_use
+                                wait_minutes = (wait_time // 60) + 1
+                                return f"Превышена квота (ошибка 429). Пожалуйста, попробуйте снова через {wait_minutes} минут.", history, model_to_use
+                            except ValueError:
+                                pass
+                        return "Превышена квота (ошибка 429). Пожалуйста, попробуйте позже.", history, model_to_use
+                    return "Произошла ошибка API, не могу ответить. Попробуйте позже.", history, model_to_use
+    except asyncio.TimeoutError as e:
+        print(f"Превышен timeout OpenRouter ({OPENROUTER_MODEL_TIMEOUT_SECONDS}s): {e}")
+        log_data["error"] = f"Timeout after {OPENROUTER_MODEL_TIMEOUT_SECONDS}s"
+        history.pop()
+        return "Сервис отвечал слишком долго. Попробуйте позже.", history, model_to_use
+    except Exception as e:
+        print(f"Произошла ошибка при запросе к API: {e}")
+        log_data["error"] = str(e)
+        history.pop()
+        return "Произошла ошибка сети, не могу ответить. Попробуйте позже.", history, model_to_use
+    finally:
+        if log_data:
+            await log_api_call_async(log_data)
+
 
 async def get_google_ai_response(history, user_id, user_name, channel_id, model_to_use, system_message):
     """Отправляет запрос к API Google (genai) и возвращает ответ с поддержкой фолбэка."""
@@ -845,9 +1272,8 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
                     raise Exception(error_message)
 
             print(f"Попытка использования модели: {current_model}")
-            ai_response, input_tokens, output_tokens, usage_metadata = await asyncio.wait_for(
-                asyncio.to_thread(sync_google_call, current_model),
-                timeout=GEMINI_MODEL_TIMEOUT_SECONDS
+            ai_response, input_tokens, output_tokens, usage_metadata = await asyncio.to_thread(
+                sync_google_call, current_model
             )
             normalized_response = normalize_ai_response_text(ai_response)
 
@@ -867,6 +1293,7 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
             request_cost_usd = register_user_token_usage(
                 user_id, input_tokens, output_tokens, response_time, provider="google"
             )
+            await persist_token_usage_events_async()
             
             log_data = {
                 "timestamp_utc": datetime.utcnow().isoformat(),
@@ -888,7 +1315,7 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
                 "duration_seconds": response_time - request_time
             }
              # Логируем и выходим из функции при успехе
-            log_api_call(log_data)
+            await log_api_call_async(log_data)
             # (ИЗМЕНЕНО) Возвращаем успешную модель
             return normalized_response, history, current_model
 
@@ -904,6 +1331,12 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
 
         except Exception as e:
             last_exception = e
+            if is_google_timeout_error(e):
+                print(
+                    f"TIMEOUT: model {current_model} exceeded {GEMINI_MODEL_TIMEOUT_SECONDS}s, switching."
+                )
+                if current_model != models_to_try[-1]:
+                    continue
             # Проверяем, является ли ошибка исчерпанием ресурсов (429)
             if isinstance(e, google_exceptions.ResourceExhausted):
                  print(f"⚠️ Модель {current_model} исчерпала лимиты (429).")
@@ -931,6 +1364,9 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
     if isinstance(last_exception, EmptyModelResponseError):
         status_code = 502
         error_message = "Модель вернула пустой ответ. Попробуйте позже."
+    elif is_google_timeout_error(last_exception):
+        status_code = 504
+        error_message = "Google API отвечал слишком долго. Попробуйте снова позже."
     elif last_exception and isinstance(last_exception, google_exceptions.ResourceExhausted):
         status_code = 429
         # Парсинг времени ожидания из последней ошибки
@@ -957,7 +1393,7 @@ async def get_google_ai_response(history, user_id, user_name, channel_id, model_
         "error": str(last_exception),
         "duration_seconds": response_time - request_time
     }
-    log_api_call(log_data)
+    await log_api_call_async(log_data)
     history.pop()
     return error_message, history, model_to_use
 
@@ -1006,7 +1442,8 @@ async def handle_regular_message(message, channel_lock):
             wait_seconds = min(wait_candidates) if wait_candidates else 60
             wait_minutes = int(wait_seconds // 60) + 1
 
-            await message.reply(
+            await safe_message_reply(
+                message,
                 f"Достигнут лимит по токенам: за час ${hourly_cost:.4f}/{HOURLY_COST_LIMIT_USD:.2f}, "
                 f"за сутки ${daily_cost:.4f}/{DAILY_COST_LIMIT_USD:.2f}. "
                 f"Попробуйте снова через {wait_minutes} мин.",
@@ -1066,22 +1503,22 @@ async def handle_regular_message(message, channel_lock):
                     await send_discord_response(message, response_text, trailing_text=info_suffix)
                 except PartialDiscordSendError as e:
                     if e.response_fully_sent:
-                        write_context(channel_id, updated_history)
+                        await write_context_async(channel_id, updated_history)
                     elif e.sent_response_chunks and updated_history and updated_history[-1].get("role") == "assistant":
                         delivered_response_text = build_sent_response_history_text(e.sent_response_chunks)
                         replace_last_assistant_message(updated_history, delivered_response_text)
-                        write_context(channel_id, updated_history)
+                        await write_context_async(channel_id, updated_history)
 
                     print(f"Не удалось полностью отправить ответ в Discord: {e.original_exception}")
                     return
 
-            write_context(channel_id, updated_history)
+            await write_context_async(channel_id, updated_history)
 
 # --- События Discord ---
 
 @client.event
 async def on_ready():
-    """Событие, которое срабаотыет при успешном подключении бота."""
+    """Событие, которое срабатывает при успешном подключении бота."""
     print(f'Бот {client.user} успешно запущен!')
     print(f'Модель по умолчанию: {default_model}')
     print(f'Профиль по умолчанию: {DEFAULT_PROFILE}')
@@ -1105,20 +1542,20 @@ async def on_message(message):
     if message.author.id == OWNER_ID:
         if message.content == '!activate_bot':
             bot_active = True
-            write_settings(channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply, bot_active)
-            await message.channel.send("Бот активирован.")
+            await write_settings_async(channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply, bot_active)
+            await safe_channel_send(message.channel, "Бот активирован.")
             return
         
         if message.content == '!deactivate_bot':
             bot_active = False
-            write_settings(channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply, bot_active)
-            await message.channel.send("Бот деактивирован.")
+            await write_settings_async(channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply, bot_active)
+            await safe_channel_send(message.channel, "Бот деактивирован.")
             return
 
         if message.content == '!clear_bot':
             async with channel_lock:
-                write_context(message.channel.id, [])
-            await message.channel.send("*Контекст диалога в этом канале очищен.*")
+                await write_context_async(message.channel.id, [])
+            await safe_channel_send(message.channel, "*Контекст диалога в этом канале очищен.*")
             return
 
         if message.content == '!toggle_info_bot':
@@ -1128,10 +1565,10 @@ async def on_message(message):
             new_setting = not current_setting
             channel_show_infos[channel_id] = new_setting
             
-            write_settings(channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply, bot_active)
+            await write_settings_async(channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply, bot_active)
             
             status = "включено" if new_setting else "выключено"
-            await message.channel.send(f"Отображение информации (профиль и модель) для этого канала **{status}**.")
+            await safe_channel_send(message.channel, f"Отображение информации (профиль и модель) для этого канала **{status}**.")
             return
 
         # --- НОВАЯ КОМАНДА ВЕЧНОГО ОТВЕТА ---
@@ -1141,10 +1578,10 @@ async def on_message(message):
             new_setting = not current_setting
             channel_always_reply[channel_id] = new_setting
             
-            write_settings(channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply, bot_active)
+            await write_settings_async(channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply, bot_active)
             
             status = "ВКЛЮЧЕН" if new_setting else "ВЫКЛЮЧЕН"
-            await message.channel.send(f"⚠️ Режим «Вечный ответ» (Always Reply) для этого канала **{status}**. Бот будет отвечать на каждое сообщение.")
+            await safe_channel_send(message.channel, f"⚠️ Режим «Вечный ответ» (Always Reply) для этого канала **{status}**. Бот будет отвечать на каждое сообщение.")
             return
         # --- КОНЕЦ НОВОЙ КОМАНДЫ ---
 
@@ -1156,13 +1593,13 @@ async def on_message(message):
                     channel_id = message.channel.id
                     async with channel_lock:
                         channel_models[channel_id] = AVAILABLE_MODELS[model_alias]
-                        write_context(channel_id, []) # Сброс контекста при смене модели
-                        write_settings(channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply, bot_active)
-                    await message.channel.send(f"Модель для этого канала изменена на: `{channel_models[channel_id]}`. Контекст сброшен.")
+                        await write_context_async(channel_id, []) # Сброс контекста при смене модели
+                        await write_settings_async(channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply, bot_active)
+                    await safe_channel_send(message.channel, f"Модель для этого канала изменена на: `{channel_models[channel_id]}`. Контекст сброшен.")
                 else:
-                    await message.channel.send(f"Неизвестный псевдоним модели: `{model_alias}`. Используйте `!list_models_bot`.")
+                    await safe_channel_send(message.channel, f"Неизвестный псевдоним модели: `{model_alias}`. Используйте `!list_models_bot`.")
             else:
-                await message.channel.send("Использование: `!set_model_bot <псевдоним_модели>`")
+                await safe_channel_send(message.channel, "Использование: `!set_model_bot <псевдоним_модели>`")
             return
 
         if message.content.startswith('!set_context_bot '):
@@ -1173,21 +1610,21 @@ async def on_message(message):
                     if limit > 0:
                         channel_id = message.channel.id
                         channel_context_limits[channel_id] = limit
-                        write_settings(channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply, bot_active)
-                        await message.channel.send(f"Размер контекста для этого канала установлен на {limit} сообщений.")
+                        await write_settings_async(channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply, bot_active)
+                        await safe_channel_send(message.channel, f"Размер контекста для этого канала установлен на {limit} сообщений.")
                     else:
-                        await message.channel.send("Размер контекста должен быть положительным числом.")
+                        await safe_channel_send(message.channel, "Размер контекста должен быть положительным числом.")
                 except ValueError:
-                    await message.channel.send("Пожалуйста, укажите корректное число.")
+                    await safe_channel_send(message.channel, "Пожалуйста, укажите корректное число.")
             else:
-                await message.channel.send("Использование: `!set_context_bot <число_сообщений>`")
+                await safe_channel_send(message.channel, "Использование: `!set_context_bot <число_сообщений>`")
             return
 
         if message.content == '!list_models_bot':
             response = "Доступные модели:\n"
             for alias, model_name in AVAILABLE_MODELS.items():
                 response += f"▫️ `{alias}`: `{model_name}`\n"
-            await message.channel.send(response)
+            await safe_channel_send(message.channel, response)
             return
 
         # --- НОВЫЕ КОМАНДЫ ПРОФИЛЕЙ ---
@@ -1196,7 +1633,7 @@ async def on_message(message):
             for profile_name in SYSTEM_PROFILES.keys():
                 is_default = "(по умолчанию)" if profile_name == DEFAULT_PROFILE else ""
                 response += f"▫️ `{profile_name}` {is_default}\n"
-            await message.channel.send(response)
+            await safe_channel_send(message.channel, response)
             return
 
         if message.content.startswith('!set_profile_bot '):
@@ -1207,13 +1644,13 @@ async def on_message(message):
                     channel_id = message.channel.id
                     async with channel_lock:
                         channel_profiles[channel_id] = profile_name
-                        write_context(channel_id, []) # Сброс контекста при смене профиля
-                        write_settings(channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply, bot_active)
-                    await message.channel.send(f"Профиль для этого канала изменен на: `{profile_name}`. Контекст сброшен.")
+                        await write_context_async(channel_id, []) # Сброс контекста при смене профиля
+                        await write_settings_async(channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply, bot_active)
+                    await safe_channel_send(message.channel, f"Профиль для этого канала изменен на: `{profile_name}`. Контекст сброшен.")
                 else:
-                    await message.channel.send(f"Неизвестное имя профиля: `{profile_name}`. Используйте `!list_profiles_bot`.")
+                    await safe_channel_send(message.channel, f"Неизвестное имя профиля: `{profile_name}`. Используйте `!list_profiles_bot`.")
             else:
-                await message.channel.send("Использование: `!set_profile_bot <имя_профиля>`")
+                await safe_channel_send(message.channel, "Использование: `!set_profile_bot <имя_профиля>`")
             return
         # --- КОНЕЦ НОВЫХ КОМАНД ---
 
@@ -1222,7 +1659,7 @@ async def on_message(message):
             try:
                 guilds = client.guilds
                 if not guilds:
-                    await message.channel.send("Бот (пока) не находится ни на одном сервере.")
+                    await safe_channel_send(message.channel, "Бот (пока) не находится ни на одном сервере.")
                     return
 
                 response = f"**Бот находится на {len(guilds)} серверах:**\n\n"
@@ -1234,11 +1671,11 @@ async def on_message(message):
                 
                 # Сообщения Discord имеют лимит в 2000 символов
                 if len(response) > 2000:
-                    await message.channel.send(f"Бот на {len(guilds)} серверах. Список слишком длинный для одного сообщения (превышено 2000 символов).")
+                    await safe_channel_send(message.channel, f"Бот на {len(guilds)} серверах. Список слишком длинный для одного сообщения (превышено 2000 символов).")
                 else:
-                    await message.channel.send(response)
+                    await safe_channel_send(message.channel, response)
             except Exception as e:
-                await message.channel.send(f"Не удалось получить список серверов: {e}")
+                await safe_channel_send(message.channel, f"Не удалось получить список серверов: {e}")
             return
         # --- КОНЕЦ НОВОЙ КОМАНДЫ ---
 
@@ -1259,7 +1696,7 @@ async def on_message(message):
                 "`!list_servers_bot` - Показать список серверов, на которых находится бот.\n"
                 "`!help_bot` - Показать это сообщение."
             )
-            await message.channel.send(help_text)
+            await safe_channel_send(message.channel, help_text)
             return
 
     # --- Основная логика ответа ---
