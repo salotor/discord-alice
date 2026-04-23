@@ -43,6 +43,11 @@ CONTEXT_FILE = os.path.join(BASE_DIR, 'context.json')
 SETTINGS_FILE = os.path.join(BASE_DIR, 'settings.json')
 LOGS_FILE = os.path.join(BASE_DIR, 'api_logs.jsonl') # Файл для логов
 TOKEN_USAGE_FILE = os.path.join(BASE_DIR, 'token_usage.json')
+ALLOWED_GUILD_IDS = {
+    905775583202533387,
+    1061950985481769011,
+}
+CONTEXT_PERSISTENCE_ENABLED = True
 DEFAULT_CONTEXT_MESSAGE_LIMIT = 10 # Максимальное количество сообщений в контексте по умолчанию
 # --- Лимиты по стоимости токенов (глобально на пользователя) ---
 INPUT_TOKENS_PRICE_PER_MILLION_USD = 0.50
@@ -240,6 +245,9 @@ def _write_json_file_unlocked(file_path, data):
 
 
 def _load_context_store():
+    if not CONTEXT_PERSISTENCE_ENABLED:
+        return {}
+
     with get_file_operation_lock(CONTEXT_FILE):
         try:
             data = _read_json_file_unlocked(CONTEXT_FILE)
@@ -327,6 +335,9 @@ def _legacy_log_api_call_unused(log_data):
 
 # --- Загрузка настроек при старте ---
 def _load_context_store():
+    if not CONTEXT_PERSISTENCE_ENABLED:
+        return {}
+
     with get_file_operation_lock(CONTEXT_FILE):
         try:
             data = _read_json_file_unlocked(CONTEXT_FILE)
@@ -338,21 +349,77 @@ def _load_context_store():
 context_store = _load_context_store()
 
 
-def read_context(channel_id):
-    """Читает историю сообщений для конкретного канала из памяти."""
-    with get_file_operation_lock(CONTEXT_FILE):
-        return _clone_history_messages(context_store.get(str(channel_id), []))
+def build_context_key(channel_id, user_id):
+    return f"{channel_id}:{user_id}"
 
 
-def write_context(channel_id, messages):
-    """Обновляет историю в памяти и синхронно сбрасывает её на диск."""
-    with get_file_operation_lock(CONTEXT_FILE):
-        context_store[str(channel_id)] = _clone_history_messages(messages)
+def _channel_context_prefix(channel_id):
+    return f"{channel_id}:"
+
+
+def _legacy_channel_context_key(channel_id):
+    return str(channel_id)
+
+
+def _persist_context_store_unlocked():
+    if CONTEXT_PERSISTENCE_ENABLED:
         _write_json_file_unlocked(CONTEXT_FILE, context_store)
 
 
-async def write_context_async(channel_id, messages):
-    await asyncio.to_thread(write_context, channel_id, messages)
+def _clear_context_keys_unlocked(channel_id, user_id=None):
+    removed = False
+
+    if user_id is None:
+        legacy_key = _legacy_channel_context_key(channel_id)
+        if legacy_key in context_store:
+            del context_store[legacy_key]
+            removed = True
+
+        prefix = _channel_context_prefix(channel_id)
+        keys_to_delete = [key for key in list(context_store.keys()) if key.startswith(prefix)]
+        for key in keys_to_delete:
+            del context_store[key]
+            removed = True
+        return removed
+
+    conversation_key = build_context_key(channel_id, user_id)
+    if conversation_key in context_store:
+        del context_store[conversation_key]
+        return True
+    return False
+
+
+def read_context(channel_id, user_id):
+    """Читает историю сообщений конкретного пользователя в рамках канала."""
+    conversation_key = build_context_key(channel_id, user_id)
+    with get_file_operation_lock(CONTEXT_FILE):
+        return _clone_history_messages(context_store.get(conversation_key, []))
+
+
+def write_context(channel_id, user_id, messages):
+    """Обновляет историю конкретного пользователя в канале."""
+    conversation_key = build_context_key(channel_id, user_id)
+    with get_file_operation_lock(CONTEXT_FILE):
+        legacy_key = _legacy_channel_context_key(channel_id)
+        if legacy_key in context_store:
+            del context_store[legacy_key]
+        context_store[conversation_key] = _clone_history_messages(messages)
+        _persist_context_store_unlocked()
+
+def clear_context(channel_id, user_id=None):
+    """Очищает контекст одного пользователя или всего канала."""
+    with get_file_operation_lock(CONTEXT_FILE):
+        removed = _clear_context_keys_unlocked(channel_id, user_id=user_id)
+        if removed:
+            _persist_context_store_unlocked()
+
+
+async def write_context_async(channel_id, user_id, messages):
+    await asyncio.to_thread(write_context, channel_id, user_id, messages)
+
+
+async def clear_context_async(channel_id, user_id=None):
+    await asyncio.to_thread(clear_context, channel_id, user_id)
 
 
 async def write_settings_async(models, limits, show_infos, profiles, always_reply, saved_bot_active):
@@ -369,10 +436,63 @@ async def write_settings_async(models, limits, show_infos, profiles, always_repl
 
 def log_api_call(log_data):
     """Записывает данные об API вызове в файл логов."""
+    sanitized_log_data = dict(log_data)
+    sanitized_log_data.pop("user_name", None)
+
+    if "request_payload" in sanitized_log_data:
+        request_payload = sanitized_log_data.get("request_payload")
+        if isinstance(request_payload, dict):
+            payload_summary = {}
+            model_name = request_payload.get("model")
+            if model_name is not None:
+                payload_summary["model"] = model_name
+
+            messages = request_payload.get("messages")
+            if isinstance(messages, list):
+                payload_summary["messages_count"] = len(messages)
+                payload_summary["message_roles"] = [
+                    message.get("role", "unknown")
+                    for message in messages
+                    if isinstance(message, dict)
+                ]
+
+            contents_len = request_payload.get("contents_len")
+            if contents_len is not None:
+                payload_summary["contents_len"] = contents_len
+
+            if not payload_summary:
+                payload_summary["keys"] = sorted(request_payload.keys())
+            sanitized_log_data["request_payload"] = payload_summary
+        else:
+            sanitized_log_data["request_payload"] = {"type": type(request_payload).__name__}
+
+    if "response_body" in sanitized_log_data:
+        response_body = sanitized_log_data.get("response_body")
+        if isinstance(response_body, str):
+            sanitized_log_data["response_body"] = {"type": "text", "length": len(response_body)}
+        elif isinstance(response_body, dict):
+            response_summary = {"type": "json", "keys": sorted(response_body.keys())}
+            choices = response_body.get("choices")
+            if isinstance(choices, list):
+                response_summary["choices_count"] = len(choices)
+            sanitized_log_data["response_body"] = response_summary
+        elif isinstance(response_body, list):
+            sanitized_log_data["response_body"] = {"type": "list", "length": len(response_body)}
+        elif response_body is None:
+            sanitized_log_data["response_body"] = None
+        else:
+            sanitized_log_data["response_body"] = {"type": type(response_body).__name__}
+
+    invalid_ai_response = sanitized_log_data.get("invalid_ai_response")
+    if isinstance(invalid_ai_response, str):
+        sanitized_log_data["invalid_ai_response"] = {
+            "type": "text",
+            "length": len(invalid_ai_response),
+        }
     try:
         with get_file_operation_lock(LOGS_FILE):
             with open(LOGS_FILE, 'a', encoding='utf-8') as f:
-                f.write(json.dumps(log_data, ensure_ascii=False) + '\n')
+                f.write(json.dumps(sanitized_log_data, ensure_ascii=False) + '\n')
     except Exception as e:
         print(f"Ошибка при записи в лог-файл: {e}")
 
@@ -390,6 +510,10 @@ intents.guilds = True # <--- ДОБАВЛЕНО: Разрешение на по�
 client = discord.Client(intents=intents)
 channel_operation_locks = {}
 SAFE_ALLOWED_MENTIONS = discord.AllowedMentions.none()
+
+
+def is_allowed_guild(guild):
+    return guild is not None and guild.id in ALLOWED_GUILD_IDS
 
 
 async def safe_channel_send(channel, content, **kwargs):
@@ -965,7 +1089,7 @@ async def _legacy_get_openrouter_ai_response_unused(history, user_id, user_name,
                         history.append({"role": "assistant", "content": normalized_response})
                         return normalized_response, history, model_to_use
 
-                    print(f"Ошибка API: {response.status} - {response_body}")
+                    print(f"Ошибка API: {response.status}; response_length={len(response_body)}")
                     history.pop()
                     if response.status == 429:
                         retry_after = response.headers.get('Retry-After')
@@ -1086,7 +1210,7 @@ async def get_openrouter_ai_response(history, user_id, user_name, channel_id, mo
                         history.append({"role": "assistant", "content": normalized_response})
                         return normalized_response, history, model_to_use
 
-                    print(f"Ошибка API: {response.status} - {response_body}")
+                    print(f"Ошибка API: {response.status}; response_length={len(response_body)}")
                     history.pop()
                     if response.status == 429:
                         retry_after = response.headers.get('Retry-After')
@@ -1454,7 +1578,7 @@ async def handle_regular_message(message, channel_lock):
 
         async with message.channel.typing():
             context_limit = channel_context_limits.get(channel_id, DEFAULT_CONTEXT_MESSAGE_LIMIT)
-            context_history = read_context(channel_id)
+            context_history = read_context(channel_id, user_id)
             context_history = trim_context(context_history, context_limit)
 
             model_for_channel = channel_models.get(channel_id, default_model)
@@ -1503,16 +1627,16 @@ async def handle_regular_message(message, channel_lock):
                     await send_discord_response(message, response_text, trailing_text=info_suffix)
                 except PartialDiscordSendError as e:
                     if e.response_fully_sent:
-                        await write_context_async(channel_id, updated_history)
+                        await write_context_async(channel_id, user_id, updated_history)
                     elif e.sent_response_chunks and updated_history and updated_history[-1].get("role") == "assistant":
                         delivered_response_text = build_sent_response_history_text(e.sent_response_chunks)
                         replace_last_assistant_message(updated_history, delivered_response_text)
-                        await write_context_async(channel_id, updated_history)
+                        await write_context_async(channel_id, user_id, updated_history)
 
                     print(f"Не удалось полностью отправить ответ в Discord: {e.original_exception}")
                     return
 
-            await write_context_async(channel_id, updated_history)
+            await write_context_async(channel_id, user_id, updated_history)
 
 # --- События Discord ---
 
@@ -1528,12 +1652,22 @@ async def on_ready():
     print(f'Загружено {len(channel_show_infos)} настроек отображения инфо для каналов.')
     print(f'Загружено {len(channel_always_reply)} каналов с режимом "Вечный ответ".') # <--- НОВОЕ
 
+    allowed_guilds = [guild for guild in client.guilds if is_allowed_guild(guild)]
+    disallowed_guilds = [guild for guild in client.guilds if not is_allowed_guild(guild)]
+    print(f'Allowed guilds: {len(allowed_guilds)}/{len(client.guilds)}')
+    if disallowed_guilds:
+        disallowed_ids = ", ".join(str(guild.id) for guild in disallowed_guilds)
+        print(f'WARNING: bot is present in disallowed guilds and will ignore them: {disallowed_ids}')
+
 @client.event
 async def on_message(message):
     """Событие, которое срабатывает на каждое новое сообщение."""
     global bot_active, channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply
     
     if message.author == client.user or message.author.bot or message.webhook_id is not None:
+        return
+
+    if not is_allowed_guild(message.guild):
         return
 
     channel_lock = get_channel_operation_lock(message.channel.id)
@@ -1554,7 +1688,7 @@ async def on_message(message):
 
         if message.content == '!clear_bot':
             async with channel_lock:
-                await write_context_async(message.channel.id, [])
+                await clear_context_async(message.channel.id)
             await safe_channel_send(message.channel, "*Контекст диалога в этом канале очищен.*")
             return
 
@@ -1593,7 +1727,7 @@ async def on_message(message):
                     channel_id = message.channel.id
                     async with channel_lock:
                         channel_models[channel_id] = AVAILABLE_MODELS[model_alias]
-                        await write_context_async(channel_id, []) # Сброс контекста при смене модели
+                        await clear_context_async(channel_id) # Сброс контекста при смене модели
                         await write_settings_async(channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply, bot_active)
                     await safe_channel_send(message.channel, f"Модель для этого канала изменена на: `{channel_models[channel_id]}`. Контекст сброшен.")
                 else:
@@ -1644,7 +1778,7 @@ async def on_message(message):
                     channel_id = message.channel.id
                     async with channel_lock:
                         channel_profiles[channel_id] = profile_name
-                        await write_context_async(channel_id, []) # Сброс контекста при смене профиля
+                        await clear_context_async(channel_id) # Сброс контекста при смене профиля
                         await write_settings_async(channel_models, channel_context_limits, channel_show_infos, channel_profiles, channel_always_reply, bot_active)
                     await safe_channel_send(message.channel, f"Профиль для этого канала изменен на: `{profile_name}`. Контекст сброшен.")
                 else:
