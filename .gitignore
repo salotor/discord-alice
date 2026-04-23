@@ -6,3 +6,4 @@ token_usage.json
 temp/
 *.bat
 /__pycache__
+bot_manager_gui_config.json
